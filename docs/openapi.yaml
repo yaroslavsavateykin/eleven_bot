@@ -1,0 +1,23 @@
+openapi: 3.0.3
+info: {title: 411 Group API, version: 0.1.0}
+servers: [{url: http://localhost:8080/api/v1}]
+components:
+  securitySchemes: {bearerAuth: {type: http, scheme: bearer}}
+  schemas:
+    Event: {type: object, required: [title, starts_at], properties: {id: {type: integer}, kind: {type: string}, title: {type: string}, starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}, timezone: {type: string}, rrule: {type: string}, tags: {type: array, items: {type: string}}}}
+    OverlapWarning: {type: object, required: [event, starts_at], properties: {event: {$ref: '#/components/schemas/Event'}, starts_at: {type: string, format: date-time}}}
+security: [{bearerAuth: []}]
+paths:
+  /events:
+    get: {summary: List active events, responses: {'200': {description: Events}}}
+    post: {summary: Create an event without AI; overlapping events are persisted and returned as warnings, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}}, responses: {'200': {description: Created or duplicate with warnings}}}
+  /events/{id}:
+    get: {summary: Get event, parameters: [{name: id, in: path, required: true, schema: {type: integer}}], responses: {'200': {description: Event}}}
+  /reminders:
+    get: {summary: List reminders, responses: {'200': {description: Reminders}}}
+    post: {summary: Create reminder, responses: {'200': {description: Created}}}
+  /changes:
+    get: {summary: Poll persistent change feed, parameters: [{name: after, in: query, schema: {type: integer}}], responses: {'200': {description: Changes and next_cursor}}}
+  /users: {get: {summary: List known group users, responses: {'200': {description: Users}}}}
+  /users/{id}/context: {get: {summary: Get compact user context, responses: {'200': {description: Context}}}}
+  /ingest: {post: {summary: AI natural-language ingestion (requires configured parser), responses: {'503': {description: Parser unavailable}}}}
