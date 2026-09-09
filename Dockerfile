@@ -8,5 +8,5 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /app /app
 USER nonroot:nonroot
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 6767
 ENTRYPOINT ["/app"]

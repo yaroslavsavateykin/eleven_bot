@@ -15,31 +15,88 @@ import (
 )
 
 type Event struct {
-	ID          int64      `json:"id"`
-	GroupID     int64      `json:"group_id"`
-	Kind        string     `json:"kind"`
-	Category    string     `json:"category"`
-	Title       string     `json:"title"`
-	Description *string    `json:"description,omitempty"`
-	Location    *string    `json:"location,omitempty"`
-	StartsAt    time.Time  `json:"starts_at"`
-	EndsAt      *time.Time `json:"ends_at,omitempty"`
-	Timezone    string     `json:"timezone"`
-	AllDay      bool       `json:"all_day"`
-	RRule       *string    `json:"rrule,omitempty"`
-	Status      string     `json:"status"`
-	Tags        []string   `json:"tags,omitempty"`
-	Warnings    []Conflict `json:"warnings,omitempty"`
+	ID                int64      `json:"id"`
+	GroupID           int64      `json:"group_id"`
+	Kind              string     `json:"kind"`
+	Category          string     `json:"category"`
+	Title             string     `json:"title"`
+	Description       *string    `json:"description,omitempty"`
+	Location          *string    `json:"location,omitempty"`
+	StartsAt          time.Time  `json:"starts_at"`
+	EndsAt            *time.Time `json:"ends_at,omitempty"`
+	Timezone          string     `json:"timezone"`
+	AllDay            bool       `json:"all_day"`
+	RRule             *string    `json:"rrule,omitempty"`
+	Status            string     `json:"status"`
+	Tags              []string   `json:"tags,omitempty"`
+	Warnings          []Conflict `json:"warnings,omitempty"`
+	RecurrenceHorizon string     `json:"-"`
 }
 type Service struct {
-	DB      *sql.DB
-	GroupID int64
-	TZ      *time.Location
+	DB         *sql.DB
+	GroupID    int64
+	TZ         *time.Location
+	WeekParity WeekParityConfig
+	Semester   Semester
+}
+
+const DefaultRecurrenceHorizonWeeks = 16
+
+// Semester is the configured academic period used for automatic series limits.
+type Semester struct {
+	Start time.Time
+	End   time.Time
+}
+
+func (s Semester) Contains(at time.Time, loc *time.Location) bool {
+	if s.Start.IsZero() || s.End.IsZero() {
+		return false
+	}
+	local := at.In(loc)
+	start := time.Date(s.Start.In(loc).Year(), s.Start.In(loc).Month(), s.Start.In(loc).Day(), 0, 0, 0, 0, loc)
+	end := time.Date(s.End.In(loc).Year(), s.End.In(loc).Month(), s.End.In(loc).Day(), 23, 59, 59, 0, loc)
+	return !local.Before(start) && !local.After(end)
+}
+
+// WeekParityConfig defines academic, not ISO-calendar, week parity.
+type WeekParityConfig struct {
+	ReferenceWeekStart time.Time
+	ReferenceParity    string
+}
+
+func (c WeekParityConfig) Configured() bool {
+	return !c.ReferenceWeekStart.IsZero() && (c.ReferenceParity == "even" || c.ReferenceParity == "odd")
+}
+
+func (s Service) AcademicWeekParity(at time.Time) (string, error) {
+	if !s.WeekParity.Configured() {
+		return "", fmt.Errorf("Не настроено, какая учебная неделя считается чётной. Укажите одну известную чётную или нечётную неделю.")
+	}
+	loc := s.TZ
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := at.In(loc)
+	weekStart := time.Date(local.Year(), local.Month(), local.Day()-int((local.Weekday()+6)%7), 0, 0, 0, 0, loc)
+	ref := s.WeekParity.ReferenceWeekStart.In(loc)
+	ref = time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, loc)
+	// Compare calendar dates in UTC so daylight-saving transitions cannot alter
+	// the count of academic weeks.
+	weekDate := time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, time.UTC)
+	refDate := time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, time.UTC)
+	weeks := int(weekDate.Sub(refDate).Hours() / (7 * 24))
+	if weeks%2 == 0 {
+		return s.WeekParity.ReferenceParity, nil
+	}
+	if s.WeekParity.ReferenceParity == "even" {
+		return "odd", nil
+	}
+	return "even", nil
 }
 
 func Canonical(e Event) string {
 	// Category is metadata, not identity; preserve existing persisted dedupe keys.
-	s := fmt.Sprintf("%d|%s|%s|%s|%s|%s", e.GroupID, e.Kind, norm(e.Title), e.StartsAt.In(time.FixedZone("", 0)).Format("2006-01-02 15:04"), value(e.RRule), norm(value(e.Location)))
+	s := fmt.Sprintf("%d|%s|%s|%s|%s|%s", e.GroupID, e.Kind, norm(e.Title), e.StartsAt.In(time.FixedZone("", 0)).Format("2006-01-02 15:04"), recurrenceIdentity(e), norm(value(e.Location)))
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
 }
@@ -90,6 +147,18 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 			return e, false, fmt.Errorf("invalid rrule: %w", err)
 		}
 	}
+	if e.Timezone == "" {
+		e.Timezone = s.TZ.String()
+	}
+	if e, err = s.normalizeRecurrence(e); err != nil {
+		return e, false, err
+	}
+	if e.AllDay {
+		e, err = NormalizeAllDay(e, s.TZ)
+		if err != nil {
+			return e, false, err
+		}
+	}
 	e.StartsAt = e.StartsAt.UTC()
 	if e.EndsAt != nil {
 		v := e.EndsAt.UTC()
@@ -97,9 +166,6 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 			return e, false, fmt.Errorf("ends_at must be after starts_at")
 		}
 		e.EndsAt = &v
-	}
-	if e.Timezone == "" {
-		e.Timezone = s.TZ.String()
 	}
 	key := Canonical(e)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -131,7 +197,7 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 		return e, false, err
 	}
 	if !dup {
-		r, er := tx.ExecContext(ctx, "INSERT INTO events(group_id,kind,title,description,location,starts_at,ends_at,timezone,all_day,rrule,status,source_type,dedupe_key,created_at,updated_at,category) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", e.GroupID, e.Kind, e.Title, e.Description, e.Location, e.StartsAt.Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, boolInt(e.AllDay), e.RRule, e.Status, source, key, now, now, e.Category)
+		r, er := tx.ExecContext(ctx, "INSERT INTO events(group_id,kind,title,description,location,starts_at,ends_at,timezone,all_day,rrule,status,source_type,dedupe_key,created_at,updated_at,category,recurrence_horizon) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", e.GroupID, e.Kind, e.Title, e.Description, e.Location, e.StartsAt.Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, boolInt(e.AllDay), e.RRule, e.Status, source, key, now, now, e.Category, e.RecurrenceHorizon)
 		if er != nil {
 			return e, false, er
 		}
@@ -196,7 +262,7 @@ func (s Service) event(ctx context.Context, where string, arg any) (Event, error
 	var e Event
 	var st, en sql.NullString
 	var ad int
-	err := s.DB.QueryRowContext(ctx, "SELECT id,group_id,kind,title,description,location,starts_at,ends_at,timezone,all_day,rrule,status,category FROM events "+where, arg).Scan(&e.ID, &e.GroupID, &e.Kind, &e.Title, &e.Description, &e.Location, &st, &en, &e.Timezone, &ad, &e.RRule, &e.Status, &e.Category)
+	err := s.DB.QueryRowContext(ctx, "SELECT id,group_id,kind,title,description,location,starts_at,ends_at,timezone,all_day,rrule,status,category,recurrence_horizon FROM events "+where, arg).Scan(&e.ID, &e.GroupID, &e.Kind, &e.Title, &e.Description, &e.Location, &st, &en, &e.Timezone, &ad, &e.RRule, &e.Status, &e.Category, &e.RecurrenceHorizon)
 	if err != nil {
 		return e, err
 	}

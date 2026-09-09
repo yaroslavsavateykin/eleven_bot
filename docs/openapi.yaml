@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info: {title: 411 Group API, version: 0.1.0}
-servers: [{url: http://localhost:8080/api/v1}]
+servers: [{url: http://localhost:6767/api/v1}]
 components:
   securitySchemes: {bearerAuth: {type: http, scheme: bearer}}
   schemas:

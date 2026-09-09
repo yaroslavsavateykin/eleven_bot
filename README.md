@@ -1,47 +1,104 @@
-# 411 группа
+# Учебный бот группы
 
-Go 1.27, SQLite, Telegram long polling and a glass calendar dashboard.
+Telegram assistant for a study group: schedule storage, safe event changes, schedule questions, and reply-based conversations in Russian.
 
-## Run
+## Features
 
-Configure `.env` using `.env.example`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_GROUP_CHAT_ID`, `ADMIN_TELEGRAM_USER_ID`, AI connection settings, `EXTERNAL_API_TOKEN`, and a strong `ADMIN_PASSWORD`. Run `docker compose up -d --build`; health is `/healthz`, dashboard `/`, HTTP Basic admin page `/admin` (username `admin`). Use HTTPS when exposed publicly. No token means Telegram is disabled.
+- Persistent SQLite schedule with recurrence, conflict warnings, provenance, and changelog.
+- `/event` creates, updates, and cancels events through strict structured AI output and Go-side validation.
+- User messages and successfully persisted bot replies form a persistent graph, so conversations can continue after restart.
+- A small bounded AI agent handles replies through whitelisted tools only.
+- Dashboard, authenticated API, compact Docker deployment, and embedded migrations/prompts.
 
-Only the configured group accepts member interactions. Private messages are accepted only from the positive numeric `ADMIN_TELEGRAM_USER_ID`; unset means private access is disabled. Usernames never grant authority. The configured identity is recorded as admin when observed, including first contact in private. Private operations still manage the configured group's events; provenance retains the actual private chat/message IDs. Discovery `/chatid` is available only to the configured admin with `TELEGRAM_DISCOVERY_MODE=true`.
+## Architecture
 
-Command menus are installed only for the configured group and admin private chat. Default, all-private and all-group menus are cleared. Arbitrary historical per-chat or language-specific menus cannot be enumerated by Telegram; authorization still rejects those chats.
+`Telegram -> Conversation -> Agent -> Tools -> Schedule -> SQLite`
 
-## Event Commands
+Telegram is only transport. Conversation owns message ingestion and reply context. AI decides user intent; Go validates and executes allowed work. Details and diagram: [`docs/architecture.md`](docs/architecture.md).
+
+## Quick Start
+
+1. Clone the repository.
+2. Run `cp .env.example .env`.
+3. Create a bot with BotFather and set `TELEGRAM_BOT_TOKEN`.
+4. Set `TELEGRAM_GROUP_CHAT_ID` to the group ID and `ADMIN_TELEGRAM_USER_ID` for permitted private admin access.
+5. Configure `AI_BASE_URL`, `AI_API_KEY`, and `AI_TEXT_MODEL` for an OpenAI-compatible provider.
+6. Set strong `EXTERNAL_API_TOKEN` and `ADMIN_PASSWORD` values.
+7. Run `docker compose up -d --build`.
+
+The dashboard is at `/`, health check at `/healthz`, and admin page at `/admin` (HTTP Basic user `admin`). `/data` is persistent in Docker Compose.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token; empty disables Telegram |
+| `TELEGRAM_GROUP_CHAT_ID` | Authorized group chat ID |
+| `ADMIN_TELEGRAM_USER_ID` | Admin allowed to use the bot in private chat |
+| `TELEGRAM_DISCOVERY_MODE` | Enables admin-only `/chatid` discovery |
+| `GROUP_NAME`, `GROUP_TIMEZONE` | Display name and IANA schedule timezone |
+| `DATABASE_PATH` | SQLite path, `/data/app.db` in Docker |
+| `AI_BASE_URL`, `AI_API_KEY`, `AI_TEXT_MODEL` | OpenAI-compatible AI connection |
+| `RAW_MESSAGE_RETENTION_HOURS` | Raw graph retention; default 48 hours |
+| `GITHUB_REPOSITORY` | GitHub `owner/repository` to monitor for new tags |
+| `BASE_URL`, `HTTP_ADDR` | Dashboard URL and listen address |
+| `EXTERNAL_API_TOKEN`, `ADMIN_PASSWORD` | API bearer token and admin password |
+
+## Telegram Usage
 
 ```text
 /event завтра в 13:00 коллоквиум по органике на 90 минут
-/event каждый вторник в 10:00 семинар, 4 раза, до 11:35
 /event перенеси #12 на завтра в 15:00
-/event замени #12 на консультацию, длительность 30 минут
-/event удали #12
 /today
 /week
 /ask что у нас сегодня?
-/roast @username
 /all кто идёт за кофе?
+/roast @username
+/help
 ```
 
-`/event` accepts its request in the command, or when replying to the message that contains it. Successful changes are compact standalone messages; only clarifications and errors reply to the command message. If clarification is needed, reply normally to the bot's active question within five minutes, for example `второй` or the event title; unrelated messages and replies to older bot messages are ignored. Starting another `/event` replaces the active clarification. Persisted state survives restart; `/add` is not a command.
+Reply to a bot message to continue its conversation. For example, after `/event перенеси органику`, reply `Вторую`, then reply to the next question with `Завтра в 16:30`. The complete reply chain is recovered from SQLite. The bot also accepts an explicit `@bot_username` mention. Ordinary group messages are ignored.
 
-The model parses create/update/cancel, understands убери/удали/отмени/замени/перенеси, and must choose IDs from active group candidates. A valid operation applies immediately. One message may create several independently unambiguous events; ambiguity produces one concise Russian question with readable candidates. Explicit IDs still restrict model authority. Cancellation is soft and every mutation appends a changelog and source record atomically; update replaces tags and recomputes dedupe identity.
+## Admin Private Mode
 
-Creates with an unambiguous date and time save immediately; they never need a location or duration. Omitted duration defaults to lesson 95, test/quiz 60, exam 120, and other events 60 minutes. Successful replies show only the action, title, natural date and time range, plus concise overlap warnings; one multi-event request produces one message. Explicit ends/durations must agree; limits are 1..1440 minutes. Edit later via a new `/event` targeting the event ID. Inspect replies: model interpretation is not a deterministic natural-language guarantee.
+Only the immutable Telegram ID in `ADMIN_TELEGRAM_USER_ID` can use the bot in a private chat. The administrator can ask ordinary questions and write schedule changes in natural language, for example `Добавь завтра на первой паре квантовую` or `Дедлайн документов до пятницы`. These changes use the same group schedule and are visible on the dashboard immediately, but are not posted to the group automatically.
 
-Overlapping events are both persisted; end equal to another start is not an intersection. Create/update replies and API responses return structured overlap warnings with the intersected event and occurrence time. New recurring proposals must be daily or slower and finite within one year, at most 366 counted occurrences. Existing unbounded daily-or-slower series are checked across the proposed series' full horizon. Unsupported/dense legacy recurrence blocks the operation safely. Legacy events without an end occupy 95 minutes for overlap checks. Recurring updates/cancellations affect the entire series, not a single occurrence. Missing dates/times, low confidence, invalid JSON/fields/timezones, excessive prompts and invalid recurrence request correction without writing.
+`/sync preview` shows the pending digest privately. `/sync` sends it to the configured group and only then removes its pending announcement records. A failed Telegram send leaves the changes pending for retry.
 
-The structured event path uses JSON response mode, strict decoding, and local validation; the AI endpoint must support OpenAI-compatible `response_format: json_object`. No paid AI calls are required for tests.
+The bot checks tags for `GITHUB_REPOSITORY` hourly. The first check records the current tag without notification; later new tags are sent once to the administrator in a private message with the release link.
 
-## API And Limits
+## AI Safety
 
-Public reads: `/api/public/v1/schedule?from=<RFC3339>&to=<RFC3339>` (max 366 days), `/api/public/v1/status`. Bearer-authenticated routes include `/api/events`, `/api/events/{id}`, `/api/changes`, `/api/users`. `POST /api/events` permits overlaps and includes `warnings` with each intersected event/occurrence. API event creation retains its existing direct-import behavior, separate from Telegram event operations. `/api/ingest` is not implemented; reminder delivery, photo/audio ingestion and per-occurrence recurrence exceptions are not implemented.
+AI has no SQLite, shell, or unrestricted internal-service access. Conversational `/ask`, replies, and mentions use the bounded agent and its registered tools. `/roast` is a deliberately separate command with a narrow, embedded safety prompt and opt-in member check. Event mutations stay on the established path: structured proposal, strict Go validation, candidate/snapshot checks, then transactional `schedule.Apply`.
 
-SQLite migrations are embedded under `internal/db/migrations` and preserve existing data. Telegram receipt keys remain persisted to prevent replay after raw-message retention cleanup. Historical proposal and intent rows are retained but unused.
+Prompts live in `prompts/*.md` and are embedded into the binary with `go:embed`.
 
-## Checks
+## Development
 
-`go test ./...`, `go vet ./...`, `node internal/web/static/app.test.mjs`. Chromium checks: `PLAYWRIGHT_MODULE=/path/to/playwright-core/index.mjs CHROMIUM_PATH=/path/to/chrome node internal/web/static/browser.test.mjs` against localhost:8080. Go checks can run in `golang:1.27` with the project mounted at `/src`.
-# eleven_bot
+```bash
+gofmt -w cmd internal
+go test ./...
+go vet ./...
+node internal/web/static/app.test.mjs
+docker compose build
+```
+
+The repository pins Go 1.27. If the host launcher has not installed that toolchain, use the same released image used by CI: `docker run --rm -v "$PWD:/src" -w /src golang:1.27 go test ./...`.
+
+## Project Structure
+
+- `cmd/app`: composition root and lifecycle.
+- `internal/conversation`: message graph and reply-chain context.
+- `internal/agent`: bounded tool orchestration.
+- `internal/ai`: AI transport and strict event parsing.
+- `internal/schedule`: domain validation and transactional event mutations.
+- `internal/telegram`: Telegram-specific transport and rendering.
+- `internal/db/migrations`: the sole embedded migration source.
+- `prompts`: versioned embedded prompts.
+
+## Limitations
+
+- The agent currently exposes schedule read tools; event mutations use the compatible `/event` structured operation flow.
+- Message kind and media-group ID are recorded, but media content is not interpreted.
+- Retention can intentionally shorten very old reply context; surviving messages remain structurally valid.
+- Reminder delivery and per-occurrence recurrence exceptions are not implemented.

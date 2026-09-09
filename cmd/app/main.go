@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"group411/internal/admin"
+	"group411/internal/agent"
 	"group411/internal/ai"
 	"group411/internal/api"
 	"group411/internal/config"
+	"group411/internal/conversation"
 	"group411/internal/db"
 	"group411/internal/schedule"
 	telegramapp "group411/internal/telegram"
@@ -28,7 +29,7 @@ func main() {
 	health := flag.Bool("healthcheck", false, "check local health endpoint")
 	flag.Parse()
 	if *health {
-		r, e := http.Get("http://127.0.0.1:8080/healthz")
+		r, e := http.Get("http://127.0.0.1:6767/healthz")
 		if e != nil || r.StatusCode != 200 {
 			os.Exit(1)
 		}
@@ -67,7 +68,27 @@ func main() {
 		slog.Error("group lookup", "error", err)
 		os.Exit(1)
 	}
-	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc}
+	weekStart, _ := time.ParseInLocation("2006-01-02", c.AcademicReferenceWeekStart, loc)
+	weekParity := schedule.WeekParityConfig{ReferenceWeekStart: weekStart, ReferenceParity: c.AcademicReferenceWeekParity}
+	semester := schedule.Semester{Start: c.Semester.Start, End: c.Semester.End}
+	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc, WeekParity: weekParity, Semester: semester}
+	conversationService := conversation.Service{DB: d, MaxDepth: 16, MaxChars: 3000}
+	aiClient := ai.Service{BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel, WeekParity: weekParity, Semester: semester}
+	botAgent := agent.Agent{
+		Client: aiClient,
+		Tools: []agent.Tool{
+			agent.ScheduleTodayTool{Schedule: s},
+			agent.ScheduleStatusTool{Schedule: s},
+			agent.ScheduleSearchTool{Schedule: s},
+			agent.ScheduleWeekParityTool{Schedule: s},
+		},
+		AdminTools: []agent.Tool{
+			agent.EventOperationTool{Schedule: s, Operation: "create"},
+			agent.EventOperationTool{Schedule: s, Operation: "update"},
+			agent.EventOperationTool{Schedule: s, Operation: "cancel"},
+		},
+		MaxRounds: 4,
+	}
 	w := webapp.New(s, c.GroupName, loc)
 	r := chi.NewRouter()
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); fmt.Fprint(w, "ok\n") })
@@ -76,11 +97,11 @@ func main() {
 	r.Mount("/api", api.API{DB: d, Schedule: s, Token: c.ExternalToken, BaseURL: c.BaseURL}.Router())
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(webapp.Static())))
 	srv := &http.Server{Addr: c.HTTPAddr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
-	if err := telegramapp.Start(ctx, c.Token, telegramapp.Service{DB: d, Schedule: s, ChatID: c.GroupChatID, GroupID: groupID, AdminID: c.AdminTelegramUserID, Discovery: c.DiscoveryMode, BaseURL: c.BaseURL, GroupName: c.GroupName, AI: ai.Service{BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel}}); err != nil {
+	if err := telegramapp.Start(ctx, c.Token, telegramapp.Service{DB: d, Token: c.Token, Schedule: s, ChatID: c.GroupChatID, GroupID: groupID, AdminID: c.AdminTelegramUserID, Discovery: c.DiscoveryMode, BaseURL: c.BaseURL, GroupName: c.GroupName, GitHubRepository: c.GitHubRepository, AI: aiClient, Conversation: conversationService, Agent: botAgent}); err != nil {
 		slog.Error("telegram", "error", err)
 		os.Exit(1)
 	}
-	go worker(ctx, d, c.Retention)
+	go worker(ctx, conversationService, c.Retention)
 	go func() {
 		slog.Info("http listening", "addr", c.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -93,11 +114,13 @@ func main() {
 	defer cancel()
 	srv.Shutdown(shut)
 }
-func worker(ctx context.Context, d *sql.DB, retention time.Duration) {
+func worker(ctx context.Context, conversations conversation.Service, retention time.Duration) {
 	tick := time.NewTicker(time.Hour)
 	defer tick.Stop()
 	for {
-		_, _ = d.ExecContext(ctx, "DELETE FROM messages WHERE created_at < ?", time.Now().Add(-retention).UTC().Format(time.RFC3339Nano))
+		if err := conversations.Prune(ctx, time.Now().Add(-retention)); err != nil {
+			slog.Error("message retention", "error", err)
+		}
 		select {
 		case <-ctx.Done():
 			return

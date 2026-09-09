@@ -28,3 +28,34 @@ func TestParseOperationsUsesDialogueAndRussianQuestion(t *testing.T) {
 		t.Fatalf("question %q, err %v", question, err)
 	}
 }
+
+func TestTranscribeAndDescribeImageUseDedicatedModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/audio/transcriptions":
+			if err := r.ParseMultipartForm(1 << 20); err != nil || r.Form.Get("model") != "stt" {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"text":"/event завтра в 12"}`))
+		case "/chat/completions":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["model"] != "vision" {
+				t.Fatalf("vision model: %#v", body["model"])
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"конспект по химии"}}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	s := Service{BaseURL: server.URL, Key: "test", VisionModel: "vision", STTModel: "stt", Client: server.Client()}
+	text, err := s.Transcribe(context.Background(), []byte("audio"), "voice.ogg", "audio/ogg")
+	if err != nil || text != "/event завтра в 12" {
+		t.Fatalf("transcribe: %q %v", text, err)
+	}
+	note, err := s.DescribeImage(context.Background(), []byte("image"), "image/jpeg")
+	if err != nil || note != "конспект по химии" {
+		t.Fatalf("describe: %q %v", note, err)
+	}
+}

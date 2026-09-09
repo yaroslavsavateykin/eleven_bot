@@ -167,8 +167,8 @@ if (typeof document !== 'undefined') {
        section.replaceChildren(heading);
       for (const event of events) {
         const category = eventCategory(event);
-        const article = node('article', undefined, `importance-${category.priority}`);
-        const time = node('time', event.all_day ? 'Весь день' : format(event.starts_at, { hour: '2-digit', minute: '2-digit' }) +
+        const article = node('article', undefined, `importance-${category.priority}${event.all_day ? ' all-day-event' : ''}`);
+        const time = node('time', event.all_day ? (category.key === 'deadline' ? 'Дедлайн' : 'Весь день') : format(event.starts_at, { hour: '2-digit', minute: '2-digit' }) +
           (event.ends_at ? ` – ${format(event.ends_at, { hour: '2-digit', minute: '2-digit' })}` : ''));
         time.dateTime = event.starts_at;
         const details = node('div', undefined, 'event-details');

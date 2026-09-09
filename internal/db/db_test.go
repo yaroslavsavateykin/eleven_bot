@@ -65,3 +65,38 @@ func TestCategoryMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestMessageGraphMigrationPreservesLegacyReply(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	d, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"001_init.sql", "002_parse_errors.sql", "003_event_category.sql", "004_event_operations.sql", "005_multi_event_sources.sql"} {
+		b, er := migrations.ReadFile("migrations/" + version)
+		if er != nil {
+			t.Fatal(er)
+		}
+		if _, er = d.Exec(string(b)); er != nil {
+			t.Fatal(er)
+		}
+	}
+	if _, err = d.Exec("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations SELECT '001_init.sql','now' UNION ALL SELECT '002_parse_errors.sql','now' UNION ALL SELECT '003_event_category.sql','now' UNION ALL SELECT '004_event_operations.sql','now' UNION ALL SELECT '005_multi_event_sources.sql','now'; INSERT INTO groups VALUES(1,'test',-1,'UTC','test','now','now'); INSERT INTO users(id,telegram_user_id,created_at,updated_at) VALUES(1,1,'now','now'); INSERT INTO messages(id,group_id,telegram_chat_id,telegram_message_id,user_id,sent_at,kind,text,reply_to_message_id,created_at) VALUES(1,1,-1,10,1,'now','text','user',NULL,'now'),(2,1,-1,11,1,'now','text','reply',10,'now')"); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	d, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	var sender string
+	var raw, internal sql.NullInt64
+	if err = d.QueryRow("SELECT sender_type,reply_to_telegram_message_id,reply_to_message_id FROM messages WHERE id=2").Scan(&sender, &raw, &internal); err != nil {
+		t.Fatal(err)
+	}
+	if sender != "user" || !raw.Valid || raw.Int64 != 10 || !internal.Valid || internal.Int64 != 1 {
+		t.Fatalf("wrong migrated graph: %q %#v %#v", sender, raw, internal)
+	}
+}
