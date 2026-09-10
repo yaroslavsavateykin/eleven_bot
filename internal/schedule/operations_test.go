@@ -185,6 +185,66 @@ func TestAllDayNormalizationAndConflictExclusion(t *testing.T) {
 	}
 }
 
+func TestApplyPersistsTimedConflictAndReturnsWarning(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "conflict-warning.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
+	start := time.Now().UTC().AddDate(0, 0, 1).Truncate(time.Minute)
+	firstEnd := start.Add(95 * time.Minute)
+	if _, err = s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Первая пара", StartsAt: start, EndsAt: &firstEnd, Timezone: "UTC"}}, -1, 1); err != nil {
+		t.Fatal(err)
+	}
+	secondStart := start.Add(30 * time.Minute)
+	secondEnd := secondStart.Add(95 * time.Minute)
+	second, err := s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Вторая пара", StartsAt: secondStart, EndsAt: &secondEnd, Timezone: "UTC"}}, -1, 2)
+	if err != nil || second.ID == 0 || len(second.Warnings) != 1 || second.Warnings[0].Event.Title != "Первая пара" {
+		t.Fatalf("event=%#v err=%v", second, err)
+	}
+}
+
+func TestRenameMergesExactDuplicateIntoTarget(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "update-duplicate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
+	start := time.Now().UTC().AddDate(0, 0, 1).Truncate(time.Minute)
+	end := start.Add(time.Hour)
+	first, err := s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Практикум", StartsAt: start, EndsAt: &end, Timezone: "UTC"}}, -1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStart := start.Add(2 * time.Hour)
+	secondEnd := secondStart.Add(time.Hour)
+	second, err := s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Черновик", StartsAt: secondStart, EndsAt: &secondEnd, Timezone: "UTC"}}, -1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := second
+	updated.Title = first.Title
+	updated.StartsAt = first.StartsAt
+	updated.EndsAt = first.EndsAt
+	renamed, err := s.Apply(ctx, Proposal{Operation: "update", Event: updated, Before: Snapshot(second)}, -1, 3)
+	if err != nil || renamed.ID != second.ID || renamed.Title != "Практикум" || renamed.MergedDuplicateID != first.ID || len(renamed.Warnings) != 0 {
+		t.Fatalf("renamed=%#v err=%v", renamed, err)
+	}
+	if status := s.Get(ctx, first.ID).Status; status != "cancelled" {
+		t.Fatalf("duplicate status=%q", status)
+	}
+}
+
 func TestPrivateProposalQueuesAnnouncement(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "announcement.db"))

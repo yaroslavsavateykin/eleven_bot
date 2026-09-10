@@ -48,6 +48,12 @@ func TestAuthorizationAndCommands(t *testing.T) {
 	}
 }
 
+func TestUnknownGroupCommandProducesReply(t *testing.T) {
+	if cmd, _ := (Service{BotUsername: "configured_bot"}).command("/chatid"); cmd != "/chatid" {
+		t.Fatalf("command=%q", cmd)
+	}
+}
+
 func TestRoutingTriggers(t *testing.T) {
 	s := Service{BotUsername: "configured_bot"}
 	if !s.mentioned("@configured_bot когда пара?") || !s.mentioned("привет, @CONFIGURED_bot!") {
@@ -429,6 +435,25 @@ func TestEventSummaryIsCompact(t *testing.T) {
 	}
 	if got := s.eventSummary(e, schedule.Proposal{Operation: "cancel"}); got != "Отменил: Английский." {
 		t.Fatalf("cancel summary=%q", got)
+	}
+}
+
+func TestAllDayDeadlineSummaryHasNoInventedTime(t *testing.T) {
+	tz := time.UTC
+	start := time.Date(2026, 9, 25, 0, 0, 0, 0, tz)
+	end := start.AddDate(0, 0, 1)
+	s := Service{Schedule: schedule.Service{TZ: tz}}
+	got := s.eventSummary(schedule.Event{Title: "Сдать отчёт", Category: "deadline", AllDay: true, StartsAt: start, EndsAt: &end, Timezone: tz.String()}, schedule.Proposal{Operation: "create"})
+	if !strings.Contains(got, "дедлайн: Сдать отчёт") || strings.Contains(got, "00:00") {
+		t.Fatalf("deadline summary=%q", got)
+	}
+}
+
+func TestEventSummaryReportsMergedDuplicate(t *testing.T) {
+	s := Service{Schedule: schedule.Service{TZ: time.UTC}}
+	got := s.eventSummary(schedule.Event{Title: "Практикум", StartsAt: time.Now().UTC(), MergedDuplicateID: 42}, schedule.Proposal{Operation: "update"})
+	if !strings.Contains(got, "Объединил с дубликатом #42") {
+		t.Fatalf("summary=%q", got)
 	}
 }
 

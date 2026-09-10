@@ -65,6 +65,37 @@ func TestAgentTextAndToolRounds(t *testing.T) {
 		t.Fatal(got, err, tool.calls)
 	}
 }
+
+func TestAgentBoundsToolResultPrompt(t *testing.T) {
+	toolResult := strings.Repeat("событие ", 2000)
+	client := &promptClient{answers: []string{`{"reply":"","tool_calls":[{"name":"x","arguments":{}}]}`, `{"reply":"готово","tool_calls":[]}`}}
+	largeTool := largeResultTool{content: toolResult}
+	result, err := Agent{Client: client, Tools: []Tool{largeTool}}.Run(context.Background(), input())
+	if err != nil || result.Reply != "готово" || len(client.prompts) != 2 || len(client.prompts[1]) > 5800 {
+		t.Fatalf("result=%#v err=%v prompts=%d len=%d", result, err, len(client.prompts), len(client.prompts[1]))
+	}
+}
+
+type largeResultTool struct{ content string }
+
+func (largeResultTool) Name() string            { return "x" }
+func (largeResultTool) Description() string     { return "test" }
+func (largeResultTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t largeResultTool) Execute(context.Context, json.RawMessage) (ToolResult, error) {
+	return ToolResult{Content: t.content}, nil
+}
+
+type promptClient struct {
+	answers []string
+	prompts []string
+}
+
+func (c *promptClient) Complete(_ context.Context, _ string, prompt string) (string, error) {
+	c.prompts = append(c.prompts, prompt)
+	answer := c.answers[0]
+	c.answers = c.answers[1:]
+	return answer, nil
+}
 func TestAgentRejectsUnsafeCalls(t *testing.T) {
 	for _, raw := range []string{`{"reply":"","tool_calls":[{"name":"sql","arguments":{}}]}`, `{"reply":"","tool_calls":[{"name":"x","arguments":{}},{"name":"x","arguments":{}}]}`} {
 		_, err := Agent{Client: &fakeClient{answers: []string{raw}}, Tools: []Tool{&fakeTool{name: "x"}}}.Run(context.Background(), input())

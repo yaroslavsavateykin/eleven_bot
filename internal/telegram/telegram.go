@@ -239,6 +239,8 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 			arg = m.ReplyToMessage.Text
 		}
 		s.event(ctx, b, m.Chat.ID, m.ID, arg, userID)
+	default:
+		s.sendReply(ctx, b, m.Chat.ID, m.ID, "Неизвестная команда. Напишите /help.")
 	}
 	completed = true
 }
@@ -1317,6 +1319,9 @@ func (s Service) eventSummary(e schedule.Event, p schedule.Proposal) string {
 	}
 	for _, warning := range e.Warnings {
 		summary += fmt.Sprintf("\nПересекается с: %s, %s", limit(warning.Event.Title, 80), warning.StartsAt.In(s.Schedule.TZ).Format("02.01 15:04"))
+	}
+	if e.MergedDuplicateID != 0 {
+		summary += fmt.Sprintf("\nОбъединил с дубликатом #%d.", e.MergedDuplicateID)
 	}
 	return summary
 }

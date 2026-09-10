@@ -311,6 +311,15 @@ func TestParseOperationsAllDayAndTimedDeadlines(t *testing.T) {
 	}
 }
 
+func TestAllDayDeadlineAcceptsTodayAfterMidnight(t *testing.T) {
+	now := time.Date(2026, 9, 10, 15, 0, 0, 0, time.UTC)
+	v := operation{Operation: "create", Kind: "deadline", Category: "deadline", Title: "Подать заявление", Start: "2026-09-10", Timezone: "UTC", AllDay: true, Duration: 0, Confidence: .99}
+	p, err := proposal(v, now, time.UTC, nil)
+	if err != nil || !p.Event.AllDay || p.Event.StartsAt.Format("2006-01-02") != "2026-09-10" || p.Event.EndsAt.Sub(p.Event.StartsAt) != 24*time.Hour {
+		t.Fatalf("proposal=%#v err=%v", p, err)
+	}
+}
+
 func TestExamDefaultDurationIsThreeAndHalfHours(t *testing.T) {
 	v := operation{Operation: "create", Kind: "event", Category: "exam", Title: "Экзамен", Start: "2026-09-09T10:00:00", Timezone: "UTC", Duration: 0, Confidence: .99}
 	p, err := proposal(v, time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC), time.UTC, nil)

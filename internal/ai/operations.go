@@ -273,7 +273,7 @@ func proposal(v operation, now time.Time, loc *time.Location, candidates []sched
 		return p, fmt.Errorf("неподдерживаемый часовой пояс")
 	}
 	start, err := parseStart(v.Start, v.AllDay, loc)
-	if err != nil || start.Before(now.Add(-5*time.Minute)) || start.After(now.AddDate(1, 0, 0)) {
+	if err != nil || start.After(now.AddDate(1, 0, 0)) || (!v.AllDay && start.Before(now.Add(-5*time.Minute)) || v.AllDay && start.In(loc).Format("2006-01-02") < now.In(loc).Format("2006-01-02")) {
 		return p, fmt.Errorf("нужна точная будущая дата в пределах года")
 	}
 	if v.Duration < 0 || v.Duration > 1440 {

@@ -1,104 +1,255 @@
-# Учебный бот группы
+# Бот-помощник учебной группы
 
-Telegram assistant for a study group: schedule storage, safe event changes, schedule questions, and reply-based conversations in Russian.
+Telegram-бот для расписания учебной группы. Хранит расписание в SQLite, отвечает на вопросы, принимает изменения через `/event` и продолжает разговор по reply-цепочкам.
 
-## Features
+Бот не использует имя как часть личности. Технические display name и username Telegram-аккаунта не влияют на ответы.
 
-- Persistent SQLite schedule with recurrence, conflict warnings, provenance, and changelog.
-- `/event` creates, updates, and cancels events through strict structured AI output and Go-side validation.
-- User messages and successfully persisted bot replies form a persistent graph, so conversations can continue after restart.
-- A small bounded AI agent handles replies through whitelisted tools only.
-- Dashboard, authenticated API, compact Docker deployment, and embedded migrations/prompts.
+## Возможности
 
-## Architecture
+- Расписание, разовые события, пары, дедлайны и повторяющиеся занятия.
+- Изменение расписания через `/event` и естественный язык в приватном чате администратора.
+- Дедлайн с датой без времени сохраняется как событие на весь день.
+- Пересечения не блокируют сохранение: событие добавляется, а бот сообщает о конфликте в ответе.
+- `/today`, `/week`, `/ask`, `/roast`, `/all`, `/help`.
+- Reply-цепочки: reply на **любое сообщение бота** является достаточным trigger для ответа в группе.
+- Временный ответ `Думаю…` редактируется в итог или в ошибку.
+- Веб-интерфейс расписания, `/healthz`, `/admin` и API.
+- SQLite, миграции и message graph переживают перезапуск контейнера.
 
-`Telegram -> Conversation -> Agent -> Tools -> Schedule -> SQLite`
+## Как бот реагирует в группе
 
-Telegram is only transport. Conversation owns message ingestion and reply context. AI decides user intent; Go validates and executes allowed work. Details and diagram: [`docs/architecture.md`](docs/architecture.md).
+В настроенной группе бот обрабатывает только:
 
-## Quick Start
+1. Команды, адресованные этому боту: `/ask`, `/event`, `/today` и т. д.
+2. Явное упоминание `@username_бота`.
+3. Прямой reply пользователя на сообщение бота.
 
-1. Clone the repository.
-2. Run `cp .env.example .env`.
-3. Create a bot with BotFather and set `TELEGRAM_BOT_TOKEN`.
-4. Set `TELEGRAM_GROUP_CHAT_ID` to the group ID and `ADMIN_TELEGRAM_USER_ID` for permitted private admin access.
-5. Configure `AI_BASE_URL`, `AI_API_KEY`, and `AI_TEXT_MODEL` for an OpenAI-compatible provider.
-6. Set strong `EXTERNAL_API_TOKEN` and `ADMIN_PASSWORD` values.
-7. Run `docker compose up -d --build`.
+Обычные несвязанные сообщения группы игнорируются. Reply на сообщение другого человека или другого бота также игнорируется.
 
-The dashboard is at `/`, health check at `/healthz`, and admin page at `/admin` (HTTP Basic user `admin`). `/data` is persistent in Docker Compose.
+Reply-цепочка является контекстом, а не вечной блокировкой режима. Короткие ответы вроде `да`, `вторую` или `на 16:30` продолжают уточнение события. Новый явный запрос вроде `добавь завтра пятой парой физхимию` начинает новую операцию, даже если отправлен reply на старую ветку.
 
-## Configuration
-
-| Variable | Purpose |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token; empty disables Telegram |
-| `TELEGRAM_GROUP_CHAT_ID` | Authorized group chat ID |
-| `ADMIN_TELEGRAM_USER_ID` | Admin allowed to use the bot in private chat |
-| `TELEGRAM_DISCOVERY_MODE` | Enables admin-only `/chatid` discovery |
-| `GROUP_NAME`, `GROUP_TIMEZONE` | Display name and IANA schedule timezone |
-| `DATABASE_PATH` | SQLite path, `/data/app.db` in Docker |
-| `AI_BASE_URL`, `AI_API_KEY`, `AI_TEXT_MODEL` | OpenAI-compatible AI connection |
-| `RAW_MESSAGE_RETENTION_HOURS` | Raw graph retention; default 48 hours |
-| `GITHUB_REPOSITORY` | GitHub `owner/repository` to monitor for new tags |
-| `BASE_URL`, `HTTP_ADDR` | Dashboard URL and listen address |
-| `EXTERNAL_API_TOKEN`, `ADMIN_PASSWORD` | API bearer token and admin password |
-
-## Telegram Usage
+## Команды
 
 ```text
-/event завтра в 13:00 коллоквиум по органике на 90 минут
-/event перенеси #12 на завтра в 15:00
 /today
 /week
-/ask что у нас сегодня?
-/all кто идёт за кофе?
+/ask что завтра по парам?
+/event завтра в 13:00 коллоквиум по органике на 90 минут
+/event перенеси #12 на завтра в 15:00
+/event отмени семинар по ВМС
 /roast @username
+/all кто идёт за кофе?
 /help
 ```
 
-Reply to a bot message to continue its conversation. For example, after `/event перенеси органику`, reply `Вторую`, then reply to the next question with `Завтра в 16:30`. The complete reply chain is recovered from SQLite. The bot also accepts an explicit `@bot_username` mention. Ordinary group messages are ignored.
+Примеры обычного продолжения:
 
-## Admin Private Mode
+```text
+Пользователь: /today
+Бот: Сегодня событий нет.
+Пользователь reply: а завтра?
+Бот: [ответ по расписанию]
 
-Only the immutable Telegram ID in `ADMIN_TELEGRAM_USER_ID` can use the bot in a private chat. The administrator can ask ordinary questions and write schedule changes in natural language, for example `Добавь завтра на первой паре квантовую` or `Дедлайн документов до пятницы`. These changes use the same group schedule and are visible on the dashboard immediately, but are not posted to the group automatically.
+Пользователь: /event перенеси органику
+Бот: Какую пару перенести?
+Пользователь reply: вторую
+Бот: На какое время?
+Пользователь reply: на 16:30
+Бот: [изменение сохранено]
+```
 
-`/sync preview` shows the pending digest privately. `/sync` sends it to the configured group and only then removes its pending announcement records. A failed Telegram send leaves the changes pending for retry.
+## Дедлайны и пересечения
 
-The bot checks tags for `GITHUB_REPOSITORY` hourly. The first check records the current tag without notification; later new tags are sent once to the administrator in a private message with the release link.
+Дедлайн без времени занимает весь день:
 
-## AI Safety
+```text
+/event добавь 10 сентября дедлайн подачи заявления
+```
 
-AI has no SQLite, shell, or unrestricted internal-service access. Conversational `/ask`, replies, and mentions use the bounded agent and its registered tools. `/roast` is a deliberately separate command with a narrow, embedded safety prompt and opt-in member check. Event mutations stay on the established path: structured proposal, strict Go validation, candidate/snapshot checks, then transactional `schedule.Apply`.
+Дедлайн с временем является обычным timed event:
 
-Prompts live in `prompts/*.md` and are embedded into the binary with `go:embed`.
+```text
+/event добавь сегодня в 15:00 дедлайн подачи заявления
+```
 
-## Development
+Если время пересекается с другой парой, бот всё равно сохраняет новое событие и пишет, с чем оно пересекается. Расписание может быть противоречивым, реальность иногда тоже.
+
+## Получение ID группы
+
+Telegram не даёт надёжно узнать numeric ID группы из её названия или username. Получайте его только через временный discovery mode и `/chatid`.
+
+1. В `.env` временно установите:
+
+```env
+TELEGRAM_DISCOVERY_MODE=true
+TELEGRAM_GROUP_CHAT_ID=
+ADMIN_TELEGRAM_USER_ID=ВАШ_NUMERIC_TELEGRAM_ID
+```
+
+2. Перезапустите сервис.
+3. Отправьте `/chatid` в нужной группе **с аккаунта администратора**.
+4. Бот пришлёт numeric Chat ID вида `-100...`.
+5. Сохраните его в `.env` и обязательно выключите discovery mode:
+
+```env
+TELEGRAM_GROUP_CHAT_ID=-1001234567890
+TELEGRAM_DISCOVERY_MODE=false
+```
+
+6. Перезапустите сервис ещё раз.
+
+После настройки `/chatid` не является рабочей пользовательской командой. Это намеренно: служебный режим не должен остаться включённым навсегда.
+
+## Конфигурация
+
+Создайте `.env` рядом с `compose.yml` или локальным `docker-compose.yml`. Секреты никогда не добавляйте в Git.
+
+```env
+# Telegram
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_GROUP_CHAT_ID=-1001234567890
+TELEGRAM_DISCOVERY_MODE=false
+ADMIN_TELEGRAM_USER_ID=123456789
+
+# Группа и база
+GROUP_NAME=411 группа
+GROUP_TIMEZONE=Europe/Moscow
+DATABASE_PATH=/data/app.db
+RAW_MESSAGE_RETENTION_HOURS=48
+
+# Веб-интерфейс. BASE_URL отправляется ботом в сообщениях.
+HTTP_ADDR=:6767
+BASE_URL=https://schedule.example.org
+
+# Администрирование и API
+ADMIN_PASSWORD=замените-на-длинный-пароль
+EXTERNAL_API_TOKEN=длинный-случайный-токен
+
+# OpenAI-совместимый AI endpoint
+AI_BASE_URL=https://ai.example.org/v1
+AI_API_KEY=...
+AI_TEXT_MODEL=...
+AI_VISION_MODEL=...
+AI_STT_MODEL=
+
+# Учебная неделя, если используется чётность
+ACADEMIC_REFERENCE_WEEK_START=2026-09-07
+ACADEMIC_REFERENCE_WEEK_PARITY=odd
+
+# Необязательно: проверка новых GitHub tags
+GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
+```
+
+Главные переменные:
+
+| Переменная | Назначение |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Токен, выданный BotFather. |
+| `TELEGRAM_GROUP_CHAT_ID` | ID единственной разрешённой группы. |
+| `ADMIN_TELEGRAM_USER_ID` | Numeric ID администратора для private chat. |
+| `TELEGRAM_DISCOVERY_MODE` | Временно включает `/chatid`; после настройки должен быть `false`. |
+| `BASE_URL` | Внешняя ссылка, которую бот отправляет пользователям. Не `localhost` на сервере. |
+| `HTTP_ADDR` | Адрес, на котором слушает приложение. По умолчанию `:6767`. |
+| `DATABASE_PATH` | Путь SQLite. В Docker используется `/data/app.db`. |
+| `AI_BASE_URL`, `AI_API_KEY`, `AI_TEXT_MODEL` | Параметры OpenAI-compatible endpoint. |
+
+## Запуск через Docker Compose
+
+Для локальной разработки:
+
+```bash
+cp .env.example .env
+# заполните .env
+docker compose up -d --build
+curl http://127.0.0.1:6767/healthz
+```
+
+Веб-интерфейс будет на `http://localhost:6767`, если `BASE_URL` не переопределён.
+
+Локальный compose хранит базу в `./data`. Контейнер запускается от непривилегированного пользователя; при ручном создании volume у него должны быть права на запись для UID `65532`.
+
+## Запуск готового образа
+
+Образы публикуются в GitHub Container Registry с неизменяемыми тегами:
+
+```text
+ghcr.io/yaroslavsavateykin/eleven_bot:v0.0.3
+```
+
+Используйте конкретный тег в production compose, а не плавающий `latest`:
+
+```yaml
+services:
+  eleven-bot:
+    image: ghcr.io/yaroslavsavateykin/eleven_bot:v0.0.3
+    pull_policy: always
+    env_file: .env
+    volumes:
+      - eleven_bot_data:/data
+    ports:
+      - "6767:6767"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD", "/app", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  eleven_bot_data:
+```
+
+Если package приватный, выполните `docker login ghcr.io` на сервере с GitHub PAT, имеющим `read:packages`.
+
+`.dockerignore` исключает `.env`, `.env.*`, `data/` и `.git/` из Docker context. Это обязательное условие перед публикацией образа.
+
+## Приватный чат администратора
+
+Только пользователь с `ADMIN_TELEGRAM_USER_ID` может писать боту в личные сообщения. Обычный текст там интерпретируется как импорт расписания, например:
+
+```text
+Добавь завтра первой парой квантовую химию.
+Дедлайн заявления 10 сентября.
+Перенеси семинар ВМС на 16:30.
+```
+
+Изменения применяются к общей базе сразу, но не публикуются в группу автоматически. Для публикации:
+
+```text
+/sync preview
+/sync
+```
+
+## Архитектура
+
+```text
+Telegram -> conversation graph -> router -> agent/tools or event parser -> schedule -> SQLite
+```
+
+- `internal/conversation` хранит входящие и bot-сообщения, reply relation и bounded context.
+- `internal/telegram` определяет trigger, отправляет `Думаю…`, редактирует его в итог и сохраняет ответы.
+- `internal/agent` запускает ограниченный tool-calling agent.
+- `internal/ai` связывается с OpenAI-compatible endpoint и валидирует JSON операций.
+- `internal/schedule` нормализует recurrence, проверяет целостность и применяет изменения транзакционно.
+- `internal/db/migrations` содержит единственный источник миграций.
+- `prompts` содержит встраиваемые промпты.
+
+Подробнее: [`docs/architecture.md`](docs/architecture.md). Правила для AI-агентов: [`AI_AGENTS.md`](AI_AGENTS.md).
+
+## Проверки перед публикацией
 
 ```bash
 gofmt -w cmd internal
-go test ./...
-go vet ./...
+docker run --rm -v "$PWD:/src" -w /src golang:1.27 go test ./...
+docker run --rm -v "$PWD:/src" -w /src golang:1.27 go vet ./...
 node internal/web/static/app.test.mjs
 docker compose build
 ```
 
-The repository pins Go 1.27. If the host launcher has not installed that toolchain, use the same released image used by CI: `docker run --rm -v "$PWD:/src" -w /src golang:1.27 go test ./...`.
-
-## Project Structure
-
-- `cmd/app`: composition root and lifecycle.
-- `internal/conversation`: message graph and reply-chain context.
-- `internal/agent`: bounded tool orchestration.
-- `internal/ai`: AI transport and strict event parsing.
-- `internal/schedule`: domain validation and transactional event mutations.
-- `internal/telegram`: Telegram-specific transport and rendering.
-- `internal/db/migrations`: the sole embedded migration source.
-- `prompts`: versioned embedded prompts.
-
-## Limitations
-
-- The agent currently exposes schedule read tools; event mutations use the compatible `/event` structured operation flow.
-- Message kind and media-group ID are recorded, but media content is not interpreted.
-- Retention can intentionally shorten very old reply context; surviving messages remain structurally valid.
-- Reminder delivery and per-occurrence recurrence exceptions are not implemented.
+Если на хосте установлен Go 1.27, Docker-команды можно заменить на обычные `go test ./...` и `go vet ./...`.

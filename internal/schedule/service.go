@@ -30,6 +30,7 @@ type Event struct {
 	Status            string     `json:"status"`
 	Tags              []string   `json:"tags,omitempty"`
 	Warnings          []Conflict `json:"warnings,omitempty"`
+	MergedDuplicateID int64      `json:"-"`
 	RecurrenceHorizon string     `json:"-"`
 }
 type Service struct {

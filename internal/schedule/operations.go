@@ -508,7 +508,23 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 		}
 		e.ID, err = res.LastInsertId()
 	case "update":
-		_, err = tx.ExecContext(ctx, "UPDATE events SET kind=?,category=?,title=?,description=?,location=?,starts_at=?,ends_at=?,timezone=?,all_day=?,rrule=?,dedupe_key=?,recurrence_horizon=?,updated_at=? WHERE id=? AND group_id=?", e.Kind, e.Category, e.Title, e.Description, e.Location, e.StartsAt.UTC().Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, e.AllDay, e.RRule, Canonical(e), e.RecurrenceHorizon, now, e.ID, s.GroupID)
+		key := Canonical(e)
+		var duplicateID int64
+		err = tx.QueryRowContext(ctx, "SELECT id FROM events WHERE group_id=? AND dedupe_key=? AND deleted_at IS NULL AND id<>?", s.GroupID, key, e.ID).Scan(&duplicateID)
+		if err == nil {
+			// A rename can legitimately converge on an already imported identical
+			// event. Keep the explicitly targeted event, retire the stale duplicate,
+			// then complete the requested update.
+			if _, err = tx.ExecContext(ctx, "UPDATE events SET status='cancelled',deleted_at=?,updated_at=? WHERE id=? AND group_id=?", now, now, duplicateID, s.GroupID); err != nil {
+				return e, err
+			}
+			e.MergedDuplicateID = duplicateID
+			warnings = withoutConflict(warnings, duplicateID)
+		}
+		if err != sql.ErrNoRows {
+			return e, err
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE events SET kind=?,category=?,title=?,description=?,location=?,starts_at=?,ends_at=?,timezone=?,all_day=?,rrule=?,dedupe_key=?,recurrence_horizon=?,updated_at=? WHERE id=? AND group_id=?", e.Kind, e.Category, e.Title, e.Description, e.Location, e.StartsAt.UTC().Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, e.AllDay, e.RRule, key, e.RecurrenceHorizon, now, e.ID, s.GroupID)
 	case "cancel":
 		e.Status = "cancelled"
 		_, err = tx.ExecContext(ctx, "UPDATE events SET status='cancelled',updated_at=? WHERE id=? AND group_id=?", now, e.ID, s.GroupID)
@@ -553,6 +569,19 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 	}
 	e.Warnings = warnings
 	return e, nil
+}
+
+func withoutConflict(warnings []Conflict, eventID int64) []Conflict {
+	if eventID == 0 {
+		return warnings
+	}
+	kept := warnings[:0]
+	for _, warning := range warnings {
+		if warning.Event.ID != eventID {
+			kept = append(kept, warning)
+		}
+	}
+	return kept
 }
 
 func eventTx(ctx context.Context, tx *sql.Tx, id, groupID int64) (Event, error) {
