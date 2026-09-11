@@ -2,6 +2,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -118,6 +119,63 @@ type message struct {
 	Content string `json:"content"`
 }
 
+// decodeChatContent accepts both the regular OpenAI response and providers
+// which return an SSE stream even when the request is made through a gateway.
+func decodeChatContent(data []byte) (string, error) {
+	var response struct {
+		Choices []struct {
+			Message message `json:"message"`
+			Delta   message `json:"delta"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(data, &response) == nil && len(response.Choices) > 0 {
+		text := response.Choices[0].Message.Content
+		if text == "" {
+			text = response.Choices[0].Delta.Content
+		}
+		if strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text), nil
+		}
+	}
+
+	var text strings.Builder
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	found := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Message message `json:"message"`
+				Delta   message `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &chunk) != nil || len(chunk.Choices) == 0 {
+			continue
+		}
+		found = true
+		part := chunk.Choices[0].Delta.Content
+		if part == "" {
+			part = chunk.Choices[0].Message.Content
+		}
+		text.WriteString(part)
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	if found && strings.TrimSpace(text.String()) != "" {
+		return strings.TrimSpace(text.String()), nil
+	}
+	return "", fmt.Errorf("invalid AI response")
+}
+
 func (s Service) Complete(ctx context.Context, system, prompt string) (string, error) {
 	return s.complete(ctx, system, prompt, 6000, 300, false)
 }
@@ -157,17 +215,9 @@ func (s Service) complete(ctx context.Context, system, prompt string, maxPrompt,
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return "", fmt.Errorf("AI returned HTTP %d", resp.StatusCode)
 	}
-	var out struct {
-		Choices []struct {
-			Message message `json:"message"`
-		} `json:"choices"`
-	}
-	if err = json.Unmarshal(data, &out); err != nil || len(out.Choices) == 0 {
-		return "", fmt.Errorf("invalid AI response")
-	}
-	text := strings.TrimSpace(out.Choices[0].Message.Content)
-	if text == "" {
-		return "", fmt.Errorf("empty AI response")
+	text, err := decodeChatContent(data)
+	if err != nil {
+		return "", err
 	}
 	return text, nil
 }
