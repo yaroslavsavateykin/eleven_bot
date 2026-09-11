@@ -97,7 +97,11 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			continue
 		}
 		slog.Info("agent tool executed", "tool", call.Name)
-		prompt = appendToolResult(prompt, call.Name, result.Content)
+		instruction := ""
+		if call.Name == "schedule_search" {
+			instruction = " Выбери подходящий #ID из результата и в следующем шаге вызови event_update или event_cancel; не вызывай schedule_search повторно."
+		}
+		prompt = appendToolResult(prompt, call.Name, result.Content+instruction)
 	}
 	return Result{}, fmt.Errorf("agent exceeded maximum tool rounds")
 }

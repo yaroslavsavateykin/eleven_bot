@@ -105,9 +105,35 @@ func (t EventOperationTool) Description() string {
 	return "Applies one structured " + t.Operation + " proposal after server-side schedule validation."
 }
 func (t EventOperationTool) Schema() json.RawMessage {
+	if t.Operation == "cancel" {
+		return json.RawMessage(`{"type":"object","required":["target_id"],"properties":{"target_id":{"type":"integer","description":"ID event from schedule_search"}},"additionalProperties":false}`)
+	}
 	return json.RawMessage(`{"type":"object","required":["proposal"],"properties":{"proposal":{"type":"object","required":["operation","event"],"properties":{"operation":{"type":"string","enum":["create","update","cancel"]},"before":{"type":"string"},"week_parity":{"type":"string","enum":["","even","odd"]},"event":{"type":"object","properties":{"id":{"type":"integer"},"kind":{"type":"string","enum":["lesson","deadline","event","note","other"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string","description":"RFC3339 timestamp, e.g. 2026-09-17T12:40:00+03:00"},"ends_at":{"type":["string","null"],"description":"RFC3339 timestamp after starts_at"},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"rrule":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}}}}}},"additionalProperties":false}`)
 }
 func (t EventOperationTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	if t.Operation == "cancel" {
+		var args struct {
+			TargetID int64 `json:"target_id"`
+		}
+		dec := json.NewDecoder(strings.NewReader(string(raw)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&args); err != nil || dec.Decode(new(any)) != io.EOF || args.TargetID <= 0 {
+			return ToolResult{}, fmt.Errorf("invalid cancel target_id")
+		}
+		current := t.Schedule.Get(ctx, args.TargetID)
+		if current.ID == 0 || current.Status != "active" {
+			return ToolResult{}, fmt.Errorf("active event not found")
+		}
+		event, err := t.Schedule.Apply(ctx, schedule.Proposal{Operation: "cancel", Event: current, Before: schedule.Snapshot(current)}, 0, 0)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Content: string(data)}, nil
+	}
 	var args struct {
 		Proposal schedule.Proposal `json:"proposal"`
 	}

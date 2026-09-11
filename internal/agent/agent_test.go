@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -145,6 +146,32 @@ func TestAgentRetriesAfterInvalidToolArguments(t *testing.T) {
 	result, err := Agent{Client: client, Tools: []Tool{tool}}.Run(context.Background(), input())
 	if err != nil || result.Reply != "сохранено" || tool.calls != 2 || client.calls != 3 {
 		t.Fatalf("result=%#v err=%v tool_calls=%d agent_calls=%d", result, err, tool.calls, client.calls)
+	}
+}
+
+func TestCancelToolUsesTargetIDAndLoadsSnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "cancel-tool.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}
+	start := time.Now().UTC().AddDate(0, 0, 1).Truncate(time.Minute)
+	end := start.Add(time.Hour)
+	created, err := svc.Apply(ctx, schedule.Proposal{Operation: "create", Event: schedule.Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Практикум", StartsAt: start, EndsAt: &end, Timezone: "UTC"}}, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := EventOperationTool{Schedule: svc, Operation: "cancel"}
+	if _, err = tool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"target_id":%d}`, created.ID))); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.Get(ctx, created.ID).Status; got != "cancelled" {
+		t.Fatalf("status=%q", got)
 	}
 }
 
