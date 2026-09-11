@@ -12,6 +12,12 @@ type Client interface {
 	Complete(context.Context, string, string) (string, error)
 }
 
+// StructuredClient requests a JSON object from transports that support the
+// OpenAI-compatible response_format parameter.
+type StructuredClient interface {
+	CompleteJSON(context.Context, string, string) (string, error)
+}
+
 type Conversation struct {
 	Messages []conversation.Message
 	Now      time.Time

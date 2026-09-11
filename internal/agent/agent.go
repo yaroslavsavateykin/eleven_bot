@@ -44,7 +44,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		system += "\n\nКонтекст конкретной учебной группы:\n" + prompts.GroupContext
 	}
 	for round := 0; round < rounds; round++ {
-		raw, err := a.Client.Complete(ctx, system, prompt)
+		raw, err := completeAgentJSON(ctx, a.Client, system, prompt)
 		if err != nil {
 			slog.Error("agent request failed", "error", err)
 			return Result{}, err
@@ -56,11 +56,17 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		dec := json.NewDecoder(strings.NewReader(raw))
 		dec.DisallowUnknownFields()
 		if err = dec.Decode(&response); err != nil || dec.Decode(new(any)) != io.EOF {
-			// Some OpenAI-compatible gateways stream plain assistant text despite a
-			// JSON-only system instruction. Plain text cannot trigger a tool, so it
-			// is safe to return as the final answer after an attempted tool round.
-			if round > 0 && strings.TrimSpace(raw) != "" {
-				return Result{Reply: strings.TrimSpace(raw)}, nil
+			// Gateways may prepend plain prose to the JSON object. Prefer the JSON
+			// reply and never expose its protocol envelope to Telegram users.
+			if round > 0 {
+				if reply, ok := embeddedReply(raw); ok {
+					return Result{Reply: reply}, nil
+				}
+				// Plain text after a tool cannot trigger a new tool call, so it is a
+				// safe final answer when no JSON envelope is present.
+				if !strings.Contains(raw, "\"tool_calls\"") && strings.TrimSpace(raw) != "" {
+					return Result{Reply: strings.TrimSpace(raw)}, nil
+				}
 			}
 			if err == nil {
 				err = fmt.Errorf("trailing JSON")
@@ -94,6 +100,30 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		prompt = appendToolResult(prompt, call.Name, result.Content)
 	}
 	return Result{}, fmt.Errorf("agent exceeded maximum tool rounds")
+}
+
+func completeAgentJSON(ctx context.Context, client Client, system, prompt string) (string, error) {
+	if structured, ok := client.(StructuredClient); ok {
+		return structured.CompleteJSON(ctx, system, prompt)
+	}
+	return client.Complete(ctx, system, prompt)
+}
+
+func embeddedReply(raw string) (string, bool) {
+	for end := len(raw); end > 0; {
+		start := strings.LastIndex(raw[:end], "{")
+		if start < 0 {
+			return "", false
+		}
+		var response struct {
+			Reply string `json:"reply"`
+		}
+		if json.Unmarshal([]byte(raw[start:end]), &response) == nil && strings.TrimSpace(response.Reply) != "" {
+			return strings.TrimSpace(response.Reply), true
+		}
+		end = start
+	}
+	return "", false
 }
 
 // The text transport accepts a 6 KB prompt. Tool output may contain a full

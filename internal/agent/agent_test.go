@@ -66,6 +66,28 @@ func TestAgentTextAndToolRounds(t *testing.T) {
 	}
 }
 
+func TestAgentUsesStructuredTransportWhenAvailable(t *testing.T) {
+	client := &structuredFakeClient{answer: `{"reply":"готово","tool_calls":[]}`}
+	result, err := Agent{Client: client}.Run(context.Background(), input())
+	if err != nil || result.Reply != "готово" || client.jsonCalls != 1 || client.plainCalls != 0 {
+		t.Fatalf("result=%#v err=%v json=%d plain=%d", result, err, client.jsonCalls, client.plainCalls)
+	}
+}
+
+type structuredFakeClient struct {
+	answer                string
+	jsonCalls, plainCalls int
+}
+
+func (c *structuredFakeClient) Complete(context.Context, string, string) (string, error) {
+	c.plainCalls++
+	return c.answer, nil
+}
+func (c *structuredFakeClient) CompleteJSON(context.Context, string, string) (string, error) {
+	c.jsonCalls++
+	return c.answer, nil
+}
+
 func TestAgentBoundsToolResultPrompt(t *testing.T) {
 	toolResult := strings.Repeat("событие ", 2000)
 	client := &promptClient{answers: []string{`{"reply":"","tool_calls":[{"name":"x","arguments":{}}]}`, `{"reply":"готово","tool_calls":[]}`}}
@@ -135,6 +157,18 @@ func TestAgentAcceptsPlainGatewayReplyAfterTool(t *testing.T) {
 	result, err := Agent{Client: client, Tools: []Tool{tool}}.Run(context.Background(), input())
 	if err != nil || result.Reply != "Практикум добавлен на нечётные недели." || tool.calls != 1 {
 		t.Fatalf("result=%#v err=%v tool_calls=%d", result, err, tool.calls)
+	}
+}
+
+func TestAgentExtractsReplyFromMixedGatewayOutput(t *testing.T) {
+	tool := &fakeTool{name: "event_create"}
+	client := &fakeClient{answers: []string{
+		`{"reply":"","tool_calls":[{"name":"event_create","arguments":{}}]}`,
+		"Создано: Практикум.\n\n{\"reply\":\"Создано: Практикум.\",\"tool_calls\":[]}",
+	}}
+	result, err := Agent{Client: client, Tools: []Tool{tool}}.Run(context.Background(), input())
+	if err != nil || result.Reply != "Создано: Практикум." {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
 

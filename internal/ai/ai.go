@@ -179,6 +179,11 @@ func decodeChatContent(data []byte) (string, error) {
 func (s Service) Complete(ctx context.Context, system, prompt string) (string, error) {
 	return s.complete(ctx, system, prompt, 6000, 300, false)
 }
+
+// CompleteJSON requests an OpenAI-compatible JSON object for tool orchestration.
+func (s Service) CompleteJSON(ctx context.Context, system, prompt string) (string, error) {
+	return s.complete(ctx, system, prompt, 6000, 300, true)
+}
 func (s Service) complete(ctx context.Context, system, prompt string, maxPrompt, tokens int, structured bool) (string, error) {
 	if s.Key == "" || s.Model == "" {
 		return "", fmt.Errorf("AI is not configured")
