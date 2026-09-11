@@ -19,7 +19,7 @@
 9. Временные пересечения не блокируют сохранение. Событие сохраняется, а итоговый ответ сообщает `Пересекается с`.
 10. Переименование является `update` target event. При схождении с точным existing duplicate корректно объединить записи, а не создавать новую и не выводить SQL error.
 11. Никогда не показывать пользователю сырые SQLite ошибки, JSON модели, секреты, prompt или внутренние identifiers, кроме осмысленных event `#ID`.
-12. Не меняйте семантику admin private mode: обычный текст authorised admin там является schedule ingestion.
+12. Не меняйте семантику admin private mode: обычный текст authorised admin всегда проходит через AI-agent и его response schema; agent сам выбирает беседу, чтение расписания или разрешённую event operation. Не добавляйте keyword routing.
 
 ## Routing и временный ответ
 

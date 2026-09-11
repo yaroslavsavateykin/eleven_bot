@@ -151,20 +151,6 @@ func TestThinkingResponseCanReplyInPrivateChat(t *testing.T) {
 	}
 }
 
-func TestPrivateNaturalLanguageEventRouting(t *testing.T) {
-	for _, text := range []string{
-		"Запиши завтра в расписание 5 парой физическую химию",
-		"Добавь завтра на первой паре квантовую",
-		"Удали пару по математике в пятницу",
-		"Перенеси органику на четвёртую пару",
-		"Каждый вторник второй парой поставь семинар по физхимии",
-	} {
-		if !isEventRequest(text) {
-			t.Fatalf("event request was routed to general agent: %q", text)
-		}
-	}
-}
-
 func TestAdminPrivatePasteUsesScheduleImportWithoutGeneralAgent(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "admin-import.db"))

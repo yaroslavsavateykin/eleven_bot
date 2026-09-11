@@ -156,6 +156,14 @@ func TestAdminPrivateToolRegistryIncludesWriteTools(t *testing.T) {
 	}
 }
 
+func TestAdminPrivateAgentOwnsIntentResolution(t *testing.T) {
+	client := &capturingClient{answer: `{"reply":"На месте.","tool_calls":[]}`}
+	_, err := Agent{Client: client}.Run(context.Background(), Conversation{Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: "Ты здесь?"}}, Now: time.Now(), Timezone: "UTC", Mode: ModeAdminPrivate})
+	if err != nil || !strings.Contains(client.system, "Сам анализируй смысл текущего сообщения") || !strings.Contains(client.system, "event tool") {
+		t.Fatalf("system=%q err=%v", client.system, err)
+	}
+}
+
 func TestAdminPrivateEventCreateToolIsAvailableAndAppliesProposal(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent.db"))

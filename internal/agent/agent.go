@@ -38,7 +38,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 	prompt := renderConversation(input, definitions)
 	system := prompts.AgentSystem
 	if input.Mode == ModeAdminPrivate {
-		system += "\n\nТы работаешь в приватном административном чате авторизованного администратора. Изменения расписания применяются сразу к общей группе, но не публикуются в группе автоматически; для публикации используется /sync."
+		system += "\n\nТы работаешь в приватном административном чате авторизованного администратора. Сам анализируй смысл текущего сообщения: для обычной беседы верни reply, для чтения расписания вызови read tool, для создания, изменения или отмены события вызови подходящий event tool с полной structured proposal. Изменения применяются сразу к общей группе, но не публикуются в группе автоматически; для публикации используется /sync."
 	}
 	if needsGroupContext(input) {
 		system += "\n\nКонтекст конкретной учебной группы:\n" + prompts.GroupContext

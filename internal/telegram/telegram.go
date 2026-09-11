@@ -193,7 +193,7 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 			completed = true
 			return
 		}
-		s.processPrivateEvent(ctx, b, m, stored, userID)
+		s.askPrivate(ctx, b, m.Chat.ID, text)
 		completed = true
 		return
 	}
@@ -859,15 +859,6 @@ func (s Service) allowed(chatID, userID int64, private bool) bool {
 }
 
 func privateCommandAllowed(command string) bool { return command == "/sync" }
-
-func isEventRequest(text string) bool {
-	for _, word := range []string{"добав", "запиш", "постав", "перенес", "удали", "убер", "отмен", "дедлайн", "пара", "контрольн", "экзамен", "консультац", "встреч", "семинар", "будет"} {
-		if strings.Contains(strings.ToLower(text), word) {
-			return true
-		}
-	}
-	return false
-}
 
 func isEventWriteRequest(text string) bool {
 	text = strings.ToLower(text)

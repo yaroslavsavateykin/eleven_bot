@@ -84,6 +84,7 @@ func (s Service) ParseScheduleInput(ctx context.Context, text string, now time.T
 		Skipped    []SkippedInput `json:"skipped"`
 		Question   string         `json:"question"`
 	}
+	raw = structuredJSON(raw)
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&response) != nil || dec.Decode(new(any)) != io.EOF {
@@ -205,6 +206,7 @@ func (s Service) ParseOperations(ctx context.Context, dialogue string, now time.
 		Skipped    []SkippedInput `json:"skipped"`
 		Question   string         `json:"question"`
 	}
+	raw = structuredJSON(raw)
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&response) != nil || dec.Decode(new(any)) != io.EOF {
@@ -238,6 +240,54 @@ func (s Service) ParseOperations(ctx context.Context, dialogue string, now time.
 		proposals = append(proposals, p)
 	}
 	return proposals, "", nil
+}
+
+// structuredJSON tolerates gateways/models that wrap JSON in a markdown fence
+// or add a short preamble, while the decoder below still enforces the schema.
+func structuredJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "```") {
+		if newline := strings.IndexByte(raw, '\n'); newline >= 0 {
+			raw = strings.TrimSpace(raw[newline+1:])
+		}
+		if end := strings.LastIndex(raw, "```"); end >= 0 {
+			raw = strings.TrimSpace(raw[:end])
+		}
+	}
+	start := strings.IndexByte(raw, '{')
+	if start < 0 {
+		return raw
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			if inString {
+				escaped = !escaped
+			}
+		case '"':
+			if !escaped {
+				inString = !inString
+			}
+			escaped = false
+		case '{':
+			if !inString {
+				depth++
+			}
+		case '}':
+			if !inString {
+				depth--
+				if depth == 0 {
+					return raw[start : i+1]
+				}
+			}
+		default:
+			escaped = false
+		}
+	}
+	return raw
 }
 
 func proposal(v operation, now time.Time, loc *time.Location, candidates []schedule.Event) (schedule.Proposal, error) {
@@ -299,10 +349,13 @@ func proposal(v operation, now time.Time, loc *time.Location, candidates []sched
 	end := start.Add(time.Duration(v.Duration) * time.Minute)
 	if v.End != nil && !v.AllDay {
 		explicit, er := time.ParseInLocation("2006-01-02T15:04:05", *v.End, loc)
-		if er != nil || !explicit.Equal(end) {
-			return p, fmt.Errorf("окончание и длительность не согласованы")
+		if er != nil || !explicit.After(start) {
+			return p, fmt.Errorf("некорректное окончание события")
 		}
 		end = explicit
+		v.Duration = int(end.Sub(start).Minutes())
+		inferred := false
+		v.Inferred = &inferred
 	}
 	if v.AllDay {
 		var normalizeErr error

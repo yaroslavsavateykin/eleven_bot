@@ -20,7 +20,7 @@ func TestOperationValidation(t *testing.T) {
 		bad   bool
 	}{
 		{"inferred", nil, false}, {"explicit", map[string]any{"duration_inferred": false, "end_local": "2026-09-09T09:00:00"}, false},
-		{"duration mismatch", map[string]any{"end_local": "2026-09-09T10:00:00"}, true},
+		{"explicit end overrides wrong duration", map[string]any{"end_local": "2026-09-09T10:00:00"}, false},
 		{"ambiguous", map[string]any{"operation": "cancel", "target_ids": []int{1, 2}}, true},
 		{"unknown target", map[string]any{"operation": "cancel", "target_ids": []int{99}}, true},
 		{"cancel", map[string]any{"operation": "cancel", "target_ids": []int{1}}, false},
@@ -50,13 +50,40 @@ func TestOperationValidation(t *testing.T) {
 			if (err != nil) != tc.bad {
 				t.Fatalf("proposal %v error %v", p, err)
 			}
-			if err == nil && p.Operation != "cancel" && p.Event.EndsAt.Sub(p.Event.StartsAt) != time.Hour {
-				t.Fatal("wrong duration")
+			if err == nil && p.Operation != "cancel" {
+				want := time.Hour
+				if tc.name == "explicit end overrides wrong duration" {
+					want = 2 * time.Hour
+				}
+				if p.Event.EndsAt.Sub(p.Event.StartsAt) != want {
+					t.Fatalf("duration=%s want=%s", p.Event.EndsAt.Sub(p.Event.StartsAt), want)
+				}
 			}
 			if _, err = s.ParseOperation(context.Background(), strings.Repeat("x", 3001), now, time.UTC, nil); err == nil {
 				t.Fatal("long prompt accepted")
 			}
 		})
+	}
+}
+
+func TestDecodeChatContentAcceptsSSE(t *testing.T) {
+	data := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\ndata: [DONE]\n")
+	got, err := decodeChatContent(data)
+	if err != nil || got != "hello world" {
+		t.Fatalf("content=%q err=%v", got, err)
+	}
+}
+
+func TestDecodeChatContentRejectsInvalidResponse(t *testing.T) {
+	if _, err := decodeChatContent([]byte(`{"choices":[]}`)); err == nil {
+		t.Fatal("invalid response accepted")
+	}
+}
+
+func TestStructuredJSONExtractsMarkdownAndPreamble(t *testing.T) {
+	got := structuredJSON("Готово:\n```json\n{\"operations\":[],\"skipped\":[]}\n```\n")
+	if got != `{"operations":[],"skipped":[]}` {
+		t.Fatalf("json=%q", got)
 	}
 }
 
