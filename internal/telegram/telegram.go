@@ -193,7 +193,7 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 			completed = true
 			return
 		}
-		s.askPrivate(ctx, b, m.Chat.ID, text)
+		s.askPrivate(ctx, b, m.Chat.ID, text, stored)
 		completed = true
 		return
 	}
@@ -877,12 +877,21 @@ func derefUserID(id *int64) int64 {
 	return *id
 }
 
-func (s Service) askPrivate(ctx context.Context, b *bot.Bot, chatID int64, question string) {
+func (s Service) askPrivate(ctx context.Context, b *bot.Bot, chatID int64, question string, current conversation.Message) {
 	if s.Agent.Client == nil {
 		s.ask(ctx, b, chatID, question, s.AdminID)
 		return
 	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: agent.ModeAdminPrivate})
+	messages := []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}
+	if current.ID != 0 {
+		chain, err := s.conversations().BuildReplyChain(ctx, current.ID)
+		if err != nil {
+			slog.Error("private conversation context failed", "error", err, "message_id", current.TelegramMessageID)
+		} else if len(chain) > 0 {
+			messages = chain
+		}
+	}
+	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: agent.ModeAdminPrivate})
 	if err != nil {
 		s.send(ctx, b, chatID, "Не удалось подготовить ответ. Попробуйте позже.")
 		return
@@ -899,7 +908,7 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 	case "/week":
 		s.send(ctx, b, m.Chat.ID, "Расписание на неделю: "+s.BaseURL)
 	case "/ask":
-		s.askPrivate(ctx, b, m.Chat.ID, arg)
+		s.askPrivate(ctx, b, m.Chat.ID, arg, current)
 	case "/event":
 		if arg == "" {
 			s.send(ctx, b, m.Chat.ID, "Опишите событие после /event.")

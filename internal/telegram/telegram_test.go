@@ -320,6 +320,55 @@ func (c *replyAgentClient) Complete(_ context.Context, _ string, prompt string) 
 	return `{"reply":"Исчерпывающе.","tool_calls":[]}`, nil
 }
 
+type privateContextAgentClient struct{ prompt string }
+
+func (c *privateContextAgentClient) Complete(_ context.Context, _ string, prompt string) (string, error) {
+	c.prompt = prompt
+	return `{"reply":"Создаю занятие.","tool_calls":[]}`, nil
+}
+
+func TestPrivateReplyUsesFullConversationChain(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "private-chain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',1,'UTC','test','',''); INSERT INTO users(id,telegram_user_id,created_at,updated_at) VALUES(1,1,'','')`); err != nil {
+		t.Fatal(err)
+	}
+	conversations := conversation.Service{DB: d, MaxDepth: 16, MaxChars: 3000}
+	first, _, err := conversations.Ingest(ctx, conversation.Incoming{GroupID: 1, TelegramChatID: 1, TelegramMessageID: 1, UserID: 1, Kind: "text", Text: "Добавь практикум", SentAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionID := 2
+	botQuestion, _, err := conversations.StoreBot(ctx, conversation.BotMessage{GroupID: 1, TelegramChatID: 1, TelegramMessageID: questionID, Kind: "text", Text: "Какую категорию указать?", ReplyToTelegramMessageID: &first.TelegramMessageID, SentAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := conversations.Ingest(ctx, conversation.Incoming{GroupID: 1, TelegramChatID: 1, TelegramMessageID: 3, UserID: 1, Kind: "text", Text: "lesson", ReplyToTelegramMessageID: &botQuestion.TelegramMessageID, SentAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	telegramServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":77,"date":0,"chat":{"id":1,"type":"private"}}}`))
+	}))
+	defer telegramServer.Close()
+	b, err := bot.New("test", bot.WithServerURL(telegramServer.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &privateContextAgentClient{}
+	s := Service{DB: d, GroupID: 1, Schedule: schedule.Service{DB: d, GroupID: 1, TZ: time.UTC}, Conversation: conversations, Agent: agent.Agent{Client: client}}
+	s.askPrivate(ctx, b, 1, "lesson", current)
+	for _, text := range []string{"user: Добавь практикум", "assistant: Какую категорию указать?", "user: lesson"} {
+		if !strings.Contains(client.prompt, text) {
+			t.Fatalf("missing %q in prompt=%q", text, client.prompt)
+		}
+	}
+}
+
 func TestDirectReplyToBotFallsBackWhenParentIsMissing(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "missing-parent.db"))
