@@ -126,6 +126,18 @@ func TestAgentRetriesAfterInvalidToolArguments(t *testing.T) {
 	}
 }
 
+func TestAgentAcceptsPlainGatewayReplyAfterTool(t *testing.T) {
+	tool := &fakeTool{name: "event_create"}
+	client := &fakeClient{answers: []string{
+		`{"reply":"","tool_calls":[{"name":"event_create","arguments":{}}]}`,
+		"Практикум добавлен на нечётные недели.",
+	}}
+	result, err := Agent{Client: client, Tools: []Tool{tool}}.Run(context.Background(), input())
+	if err != nil || result.Reply != "Практикум добавлен на нечётные недели." || tool.calls != 1 {
+		t.Fatalf("result=%#v err=%v tool_calls=%d", result, err, tool.calls)
+	}
+}
+
 type retryTool struct {
 	name  string
 	calls int

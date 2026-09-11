@@ -56,6 +56,12 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		dec := json.NewDecoder(strings.NewReader(raw))
 		dec.DisallowUnknownFields()
 		if err = dec.Decode(&response); err != nil || dec.Decode(new(any)) != io.EOF {
+			// Some OpenAI-compatible gateways stream plain assistant text despite a
+			// JSON-only system instruction. Plain text cannot trigger a tool, so it
+			// is safe to return as the final answer after an attempted tool round.
+			if round > 0 && strings.TrimSpace(raw) != "" {
+				return Result{Reply: strings.TrimSpace(raw)}, nil
+			}
 			if err == nil {
 				err = fmt.Errorf("trailing JSON")
 			}
