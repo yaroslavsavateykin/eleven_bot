@@ -80,7 +80,6 @@ func main() {
 			agent.ScheduleTodayTool{Schedule: s},
 			agent.ScheduleStatusTool{Schedule: s},
 			agent.ScheduleSearchTool{Schedule: s},
-			agent.ScheduleWeekParityTool{Schedule: s},
 		},
 		AdminTools: []agent.Tool{
 			agent.EventOperationTool{Schedule: s, Operation: "create"},

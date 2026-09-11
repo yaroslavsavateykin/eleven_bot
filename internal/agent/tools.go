@@ -71,37 +71,6 @@ func (t ScheduleSearchTool) Description() string {
 	return "Lists active schedule events; use it to identify an event before updating or cancelling it."
 }
 
-type ScheduleWeekParityTool struct{ Schedule schedule.Service }
-
-func (t ScheduleWeekParityTool) Name() string { return "schedule_week_parity" }
-func (t ScheduleWeekParityTool) Description() string {
-	return "Returns the configured academic-week parity for today and next week."
-}
-func (t ScheduleWeekParityTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
-}
-func (t ScheduleWeekParityTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	if err := emptyArgs(raw); err != nil {
-		return ToolResult{}, err
-	}
-	now := time.Now().In(t.Schedule.TZ)
-	current, err := t.Schedule.AcademicWeekParity(now)
-	if err != nil {
-		return ToolResult{Content: err.Error()}, nil
-	}
-	next, err := t.Schedule.AcademicWeekParity(now.AddDate(0, 0, 7))
-	if err != nil {
-		return ToolResult{}, err
-	}
-	return ToolResult{Content: "Сейчас " + parityRussian(current) + " учебная неделя. Следующая " + parityRussian(next) + "."}, nil
-}
-
-func parityRussian(parity string) string {
-	if parity == "even" {
-		return "чётная"
-	}
-	return "нечётная"
-}
 func (t ScheduleSearchTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
 }

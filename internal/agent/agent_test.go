@@ -175,15 +175,15 @@ func TestAgentAddsGroupContextOnlyForScheduleQuestions(t *testing.T) {
 }
 
 func TestAdminPrivateToolRegistryIncludesWriteTools(t *testing.T) {
-	read := []Tool{&fakeTool{name: "schedule_today"}, &fakeTool{name: "schedule_status"}, &fakeTool{name: "schedule_search"}, &fakeTool{name: "schedule_week_parity"}}
+	read := []Tool{&fakeTool{name: "schedule_today"}, &fakeTool{name: "schedule_status"}, &fakeTool{name: "schedule_search"}}
 	write := []Tool{&fakeTool{name: "event_create"}, &fakeTool{name: "event_update"}, &fakeTool{name: "event_cancel"}}
 	a := Agent{Tools: read, AdminTools: write}
 	for _, tc := range []struct {
 		mode Mode
 		want []string
 	}{
-		{ModeGroup, []string{"schedule_today", "schedule_status", "schedule_search", "schedule_week_parity"}},
-		{ModeAdminPrivate, []string{"schedule_today", "schedule_status", "schedule_search", "schedule_week_parity", "event_create", "event_update", "event_cancel"}},
+		{ModeGroup, []string{"schedule_today", "schedule_status", "schedule_search"}},
+		{ModeAdminPrivate, []string{"schedule_today", "schedule_status", "schedule_search", "event_create", "event_update", "event_cancel"}},
 	} {
 		got := a.ToolsFor(tc.mode)
 		if len(got) != len(tc.want) {
@@ -233,16 +233,6 @@ func TestAdminPrivateEventCreateToolIsAvailableAndAppliesProposal(t *testing.T) 
 	}
 	if events, err := svc.Candidates(ctx); err != nil || len(events) != 1 || events[0].Title != "Физическая химия" {
 		t.Fatalf("events=%#v err=%v", events, err)
-	}
-}
-
-func TestScheduleWeekParityToolUsesConfiguredAcademicReference(t *testing.T) {
-	// The tool's wording is intentionally tested only for the deterministic
-	// calculator result; it must not infer ISO-week parity.
-	svc := schedule.Service{TZ: time.UTC, WeekParity: schedule.WeekParityConfig{ReferenceWeekStart: time.Now().UTC().AddDate(0, 0, -int((time.Now().UTC().Weekday()+6)%7)), ReferenceParity: "even"}}
-	result, err := (ScheduleWeekParityTool{Schedule: svc}).Execute(context.Background(), json.RawMessage(`{}`))
-	if err != nil || !strings.Contains(result.Content, "Сейчас чётная учебная неделя") || !strings.Contains(result.Content, "Следующая нечётная") {
-		t.Fatalf("result=%q err=%v", result.Content, err)
 	}
 }
 
