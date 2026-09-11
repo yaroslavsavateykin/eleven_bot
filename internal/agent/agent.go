@@ -79,7 +79,10 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		result, err := tool.Execute(ctx, call.Arguments)
 		if err != nil {
 			slog.Warn("agent tool failed", "tool", call.Name, "error", err)
-			return Result{}, fmt.Errorf("tool %s: %w", call.Name, err)
+			// Invalid model arguments are recoverable: show the bounded error to the
+			// next agent round so it can repair its structured tool call.
+			prompt = appendToolResult(prompt, call.Name, "Ошибка выполнения: "+err.Error()+". Исправь аргументы инструмента или ответь пользователю без tool call.")
+			continue
 		}
 		slog.Info("agent tool executed", "tool", call.Name)
 		prompt = appendToolResult(prompt, call.Name, result.Content)

@@ -113,6 +113,35 @@ func TestAgentRejectsUnsafeCalls(t *testing.T) {
 	}
 }
 
+func TestAgentRetriesAfterInvalidToolArguments(t *testing.T) {
+	tool := &retryTool{name: "event_create"}
+	client := &fakeClient{answers: []string{
+		`{"reply":"","tool_calls":[{"name":"event_create","arguments":{}}]}`,
+		`{"reply":"","tool_calls":[{"name":"event_create","arguments":{}}]}`,
+		`{"reply":"сохранено","tool_calls":[]}`,
+	}}
+	result, err := Agent{Client: client, Tools: []Tool{tool}}.Run(context.Background(), input())
+	if err != nil || result.Reply != "сохранено" || tool.calls != 2 || client.calls != 3 {
+		t.Fatalf("result=%#v err=%v tool_calls=%d agent_calls=%d", result, err, tool.calls, client.calls)
+	}
+}
+
+type retryTool struct {
+	name  string
+	calls int
+}
+
+func (t *retryTool) Name() string            { return t.name }
+func (t *retryTool) Description() string     { return "test" }
+func (t *retryTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *retryTool) Execute(context.Context, json.RawMessage) (ToolResult, error) {
+	t.calls++
+	if t.calls == 1 {
+		return ToolResult{}, errors.New("invalid event tool arguments: missing starts_at")
+	}
+	return ToolResult{Content: "created"}, nil
+}
+
 func TestAgentRejectsTrailingJSON(t *testing.T) {
 	_, err := Agent{Client: &fakeClient{answers: []string{`{"reply":"ok","tool_calls":[]} trailing`}}}.Run(context.Background(), input())
 	if err == nil {

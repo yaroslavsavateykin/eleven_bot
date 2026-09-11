@@ -136,7 +136,7 @@ func (t EventOperationTool) Description() string {
 	return "Applies one structured " + t.Operation + " proposal after server-side schedule validation."
 }
 func (t EventOperationTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","required":["proposal"],"properties":{"proposal":{"type":"object"}},"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","required":["proposal"],"properties":{"proposal":{"type":"object","required":["operation","event"],"properties":{"operation":{"type":"string","enum":["create","update","cancel"]},"before":{"type":"string"},"week_parity":{"type":"string","enum":["","even","odd"]},"event":{"type":"object","properties":{"id":{"type":"integer"},"kind":{"type":"string","enum":["lesson","deadline","event","note","other"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string","description":"RFC3339 timestamp, e.g. 2026-09-17T12:40:00+03:00"},"ends_at":{"type":["string","null"],"description":"RFC3339 timestamp after starts_at"},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"rrule":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}}}}}},"additionalProperties":false}`)
 }
 func (t EventOperationTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
 	var args struct {
@@ -145,7 +145,10 @@ func (t EventOperationTool) Execute(ctx context.Context, raw json.RawMessage) (T
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&args); err != nil || dec.Decode(new(any)) != io.EOF {
-		return ToolResult{}, fmt.Errorf("invalid arguments")
+		if err == nil {
+			err = fmt.Errorf("trailing JSON")
+		}
+		return ToolResult{}, fmt.Errorf("invalid event tool arguments: %w", err)
 	}
 	if args.Proposal.Operation != t.Operation {
 		return ToolResult{}, fmt.Errorf("operation does not match tool")
