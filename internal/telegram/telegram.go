@@ -986,6 +986,11 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 	result, err := botAgent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
 	if err != nil {
 		slog.Error("agent", "error", err)
+		if replyTo != 0 {
+			s.sendReply(ctx, b, chatID, replyTo, "Не удалось обработать запрос. Попробуйте отправить его ещё раз.")
+		} else {
+			s.send(ctx, b, chatID, "Не удалось обработать запрос. Попробуйте отправить его ещё раз.")
+		}
 		return
 	}
 	if replyTo != 0 {
