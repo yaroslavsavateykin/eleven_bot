@@ -103,7 +103,7 @@ func TestRecentReturnsLastTenMessagesChronologically(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err = s.StoreBot(ctx, BotMessage{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 13, Kind: "text", Text: "Думаю…", SentAt: now}); err != nil {
+	if _, _, err = s.StoreBot(ctx, BotMessage{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 13, Kind: "text", Text: ProvisionalText, SentAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := s.Recent(ctx, -1, 10)
@@ -285,7 +285,7 @@ func TestUpdateBotText(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := Service{DB: d}
-	if _, _, err = s.StoreBot(ctx, BotMessage{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 7, Kind: "text", Text: "Думаю…"}); err != nil {
+	if _, _, err = s.StoreBot(ctx, BotMessage{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 7, Kind: "text", Text: ProvisionalText}); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.UpdateBotText(ctx, -1, 7, "Готово."); err != nil {

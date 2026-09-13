@@ -665,9 +665,9 @@ func (s Service) sendMarkdownReply(ctx context.Context, b *bot.Bot, chatID int64
 	return s.deliver(ctx, b, chatID, replyTo, text, models.ParseModeMarkdown, true)
 }
 
-// deliver sends a message with the given parse mode, editing a pending "Думаю…"
-// when present. When fallback is set and the formatted send fails, it retries
-// as plain text so the user always receives the result.
+// deliver sends a message with the given parse mode, editing the pending
+// provisional placeholder when present. When fallback is set and the formatted
+// send fails, it retries as plain text so the user always receives the result.
 func (s Service) deliver(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, text string, parseMode models.ParseMode, fallback bool) (*models.Message, error) {
 	if s.finishThinking(ctx, b, chatID, text, parseMode) {
 		return nil, nil
@@ -730,7 +730,7 @@ func escapeMD(s string) string {
 }
 
 func (s Service) withThinking(ctx context.Context, b *bot.Bot, chatID int64, replyTo int) context.Context {
-	m, err := s.sendReply(ctx, b, chatID, replyTo, "Думаю…")
+	m, err := s.sendReply(ctx, b, chatID, replyTo, conversation.ProvisionalText)
 	if err != nil || m == nil {
 		return ctx
 	}
@@ -1213,6 +1213,7 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		messages = kept
 		sort.SliceStable(messages, func(i, j int) bool { return messages[i].ID < messages[j].ID })
 	}
+	messages = s.withAuthorNames(ctx, messages)
 	botAgent := s.Agent
 	botAgent.Progress = func(text string) { s.updateThinking(ctx, b, chatID, text) }
 	result, err := botAgent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, current.TelegramMessageID), Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
@@ -1231,6 +1232,49 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	s.sendMarkdown(ctx, b, chatID, limit(result.Reply, 1800))
+}
+
+// withAuthorNames prefixes user messages with the speaker's first name so the
+// agent can tell who is replying to whom without inventing identities.
+func (s Service) withAuthorNames(ctx context.Context, messages []conversation.Message) []conversation.Message {
+	ids := map[int64]struct{}{}
+	for _, m := range messages {
+		if m.UserID != nil {
+			ids[*m.UserID] = struct{}{}
+		}
+	}
+	if len(ids) == 0 {
+		return messages
+	}
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for id := range ids {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	rows, err := s.DB.QueryContext(ctx, "SELECT id, COALESCE(NULLIF(first_name,''), NULLIF(username,''), 'участник') FROM users WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return messages
+	}
+	defer rows.Close()
+	names := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var name string
+		if rows.Scan(&id, &name) == nil {
+			names[id] = name
+		}
+	}
+	out := make([]conversation.Message, len(messages))
+	for i, m := range messages {
+		out[i] = m
+		if m.SenderType == conversation.SenderUser && m.UserID != nil {
+			if name := names[*m.UserID]; name != "" {
+				out[i].Text = name + ": " + m.Text
+			}
+		}
+	}
+	return out
 }
 
 func agentErrorReply(err error) string {

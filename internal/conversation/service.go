@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// ProvisionalText is the placeholder shown while the agent works. It is
+// edited in place into the final answer and is excluded from history.
+const ProvisionalText = "Секунду…"
+
 type SearchResult struct {
 	MessageID int64     `json:"message_id"`
 	Date      time.Time `json:"date"`
@@ -183,7 +187,7 @@ func (s Service) Recent(ctx context.Context, chatID int64, limit int) ([]Message
 	if limit <= 0 {
 		limit = 10
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,group_id,telegram_chat_id,telegram_message_id,sender_type,user_id,kind,COALESCE(text,''),media_group_id,media_file_id,media_mime_type,reply_to_telegram_message_id,reply_to_message_id,sent_at,created_at FROM messages WHERE telegram_chat_id=? AND text<>'Думаю…' ORDER BY id DESC LIMIT ?`, chatID, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,group_id,telegram_chat_id,telegram_message_id,sender_type,user_id,kind,COALESCE(text,''),media_group_id,media_file_id,media_mime_type,reply_to_telegram_message_id,reply_to_message_id,sent_at,created_at FROM messages WHERE telegram_chat_id=? AND text<>? ORDER BY id DESC LIMIT ?`, chatID, ProvisionalText, limit)
 	if err != nil {
 		return nil, err
 	}
