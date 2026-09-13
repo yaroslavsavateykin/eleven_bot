@@ -83,7 +83,7 @@ func main() {
 			agent.ScheduleMutationTool{Schedule: s, Operation: "update", Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "cancel", Announce: true},
 		},
-		MaxRounds: 4,
+		MaxRounds: 10,
 	}
 	w := webapp.New(s, c.GroupName, loc)
 	r := chi.NewRouter()

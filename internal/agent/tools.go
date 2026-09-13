@@ -200,6 +200,9 @@ type ScheduleMutationTool struct {
 
 func (t ScheduleMutationTool) Name() string { return "schedule_" + t.Operation }
 func (t ScheduleMutationTool) Description() string {
+	if t.Operation == "create_batch" {
+		return "Creates multiple independent schedule events in one server-side batch. Use for pasted lists such as birthdays; valid events are saved while duplicates or invalid rows are reported."
+	}
 	return "Safely " + t.Operation + " a schedule event through server-side validation."
 }
 func (t ScheduleMutationTool) Schema() json.RawMessage {
@@ -208,6 +211,9 @@ func (t ScheduleMutationTool) Schema() json.RawMessage {
 	}
 	if t.Operation == "update" {
 		return json.RawMessage(`{"type":"object","required":["target_id","changes"],"properties":{"target_id":{"type":"integer"},"changes":{"type":"object","properties":{"title":{"type":"string"},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":"string","description":"RFC3339"},"location":{"type":["string","null"]},"description":{"type":["string","null"]},"all_day":{"type":"boolean"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
+	}
+	if t.Operation == "create_batch" {
+		return json.RawMessage(`{"type":"object","required":["events"],"properties":{"events":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string"},"ends_at":{"type":["string","null"]},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}},"additionalProperties":false}`)
 	}
 	return json.RawMessage(`{"type":"object","required":["event"],"properties":{"target_id":{"type":"integer"},"event":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":["string","null"],"description":"RFC3339"},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
 }
@@ -223,6 +229,9 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 	}
 	if t.Operation == "update" {
 		return t.update(ctx, raw)
+	}
+	if t.Operation == "create_batch" {
+		return t.createBatch(ctx, raw)
 	}
 	var args struct {
 		TargetID int64      `json:"target_id"`
@@ -240,6 +249,33 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 	}
 	e.GroupID = t.Schedule.GroupID
 	return t.applyProposal(ctx, schedule.Proposal{Operation: "create", Event: e, Announce: t.Announce})
+}
+
+func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	var args struct {
+		Events []eventInput `json:"events"`
+	}
+	if err := decode(raw, &args); err != nil || len(args.Events) == 0 || len(args.Events) > 50 {
+		return ToolResult{}, fmt.Errorf("invalid batch events")
+	}
+	proposals := make([]schedule.Proposal, 0, len(args.Events))
+	for _, input := range args.Events {
+		event, err := input.Event()
+		if err != nil {
+			return ToolResult{}, err
+		}
+		event.GroupID = t.Schedule.GroupID
+		proposals = append(proposals, schedule.Proposal{Operation: "create", Event: event, Announce: t.Announce})
+	}
+	result, err := t.Schedule.ApplyImport(ctx, proposals, 0, 0)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	data, err := json.Marshal(struct {
+		Created []schedule.Event            `json:"created"`
+		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
+	}{Created: result.Events, Skipped: result.Skipped})
+	return ToolResult{Content: string(data)}, err
 }
 
 func (t ScheduleMutationTool) update(ctx context.Context, raw json.RawMessage) (ToolResult, error) {

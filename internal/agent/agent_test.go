@@ -74,15 +74,51 @@ func TestAgentDoesNotRepeatIdenticalToolCall(t *testing.T) {
 	}
 }
 
-func TestAgentReturnsSafeReplyWhenToolRoundsAreExhausted(t *testing.T) {
+func TestAgentAllowsFinalReplyAfterToolRounds(t *testing.T) {
 	tool := &fakeTool{name: "schedule_query"}
 	client := &fakeClient{answers: []string{
 		`{"reply":"","tool_calls":[{"name":"schedule_query","arguments":{"query":"один"}}]}`,
 		`{"reply":"","tool_calls":[{"name":"schedule_query","arguments":{"query":"два"}}]}`,
+		`{"reply":"Проверка завершена.","tool_calls":[]}`,
 	}}
 	result, err := (Agent{Client: client, Tools: []Tool{tool}, MaxRounds: 2}).Run(context.Background(), testInput())
-	if err != nil || result.Reply == "" || tool.calls != 2 {
+	if err != nil || result.Reply != "Проверка завершена." || tool.calls != 2 {
 		t.Fatalf("result=%#v calls=%d err=%v", result, tool.calls, err)
+	}
+}
+
+func TestAgentDefaultsToTenToolRounds(t *testing.T) {
+	tool := &fakeTool{name: "schedule_query"}
+	answers := make([]string, 11)
+	for i := range answers[:10] {
+		answers[i] = fmt.Sprintf(`{"reply":"","tool_calls":[{"name":"schedule_query","arguments":{"query":"%d"}}]}`, i)
+	}
+	answers[10] = `{"reply":"Готово.","tool_calls":[]}`
+	result, err := (Agent{Client: &fakeClient{answers: answers}, Tools: []Tool{tool}}).Run(context.Background(), testInput())
+	if err != nil || result.Reply != "Готово." || tool.calls != 10 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, tool.calls, err)
+	}
+}
+
+func TestScheduleCreateBatchCreatesBirthdays(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-batch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	tool := ScheduleMutationTool{Schedule: schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}, Operation: "create_batch"}
+	raw := json.RawMessage(`{"events":[{"kind":"birthday","title":"День рождения: Аня","starts_at":"2005-05-03T00:00:00Z","ends_at":"2005-05-04T00:00:00Z","timezone":"UTC","all_day":true},{"kind":"birthday","title":"День рождения: Борис","starts_at":"2006-03-04T00:00:00Z","ends_at":"2006-03-05T00:00:00Z","timezone":"UTC","all_day":true}]}`)
+	result, err := tool.Execute(ctx, raw)
+	if err != nil || !strings.Contains(result.Content, "День рождения: Аня") || !strings.Contains(result.Content, "День рождения: Борис") {
+		t.Fatalf("result=%s err=%v", result.Content, err)
+	}
+	var count int
+	if err = database.QueryRow("SELECT count(*) FROM events WHERE kind='birthday' AND all_day=1").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("count=%d err=%v", count, err)
 	}
 }
 

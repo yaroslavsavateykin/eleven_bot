@@ -27,7 +27,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 	}
 	rounds := a.MaxRounds
 	if rounds <= 0 {
-		rounds = 4
+		rounds = 10
 	}
 	available := a.ToolsFor(input.Mode)
 	tools := make(map[string]Tool, len(available))
@@ -45,7 +45,8 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 	// A repeated read with the same arguments cannot reveal new facts during one
 	// request. Stop the model from spending every round on the same lookup.
 	called := make(map[string]struct{})
-	for round := 0; round < rounds; round++ {
+	toolCalls := 0
+	for round := 0; round <= rounds; round++ {
 		raw, err := completeAgentJSON(ctx, a.Client, system, prompt)
 		if err != nil {
 			slog.Error("agent request failed", "error", err)
@@ -85,6 +86,9 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			return Result{}, fmt.Errorf("agent requested more than one tool in one round")
 		}
 		call := response.ToolCalls[0]
+		if toolCalls >= rounds {
+			return Result{Reply: "Не удалось завершить проверку данных за один запрос. Уточните, пожалуйста, название или дату нужного занятия."}, nil
+		}
 		tool, ok := tools[call.Name]
 		if !ok {
 			slog.Warn("unknown agent tool", "tool", call.Name)
@@ -97,6 +101,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			continue
 		}
 		called[callKey] = struct{}{}
+		toolCalls++
 		if a.Progress != nil {
 			a.Progress(toolProgress(call.Name))
 		}
@@ -122,6 +127,8 @@ func toolProgress(name string) string {
 		return "Проверяю сообщения группы…"
 	case "schedule_create":
 		return "Добавляю событие в расписание…"
+	case "schedule_create_batch":
+		return "Добавляю список событий в календарь…"
 	case "schedule_update":
 		return "Обновляю запись в расписании…"
 	case "schedule_cancel":

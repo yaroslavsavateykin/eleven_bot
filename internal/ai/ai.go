@@ -197,28 +197,36 @@ func (s Service) complete(ctx context.Context, system, prompt string, maxPrompt,
 	if err != nil {
 		return "", err
 	}
-	client := s.httpClient()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+s.Key)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := s.httpClient().Do(req)
+		if err == nil {
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			if readErr != nil {
+				err = readErr
+			} else if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+				return decodeChatContent(data)
+			} else {
+				err = fmt.Errorf("AI returned HTTP %d", resp.StatusCode)
+				if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+					return "", err
+				}
+			}
+		}
+		if attempt == 2 || ctx.Err() != nil {
+			return "", fmt.Errorf("AI request after %d attempts: %w", attempt+1, err)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 300 * time.Millisecond):
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+s.Key)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("AI request: %w", err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("AI returned HTTP %d", resp.StatusCode)
-	}
-	text, err := decodeChatContent(data)
-	if err != nil {
-		return "", err
-	}
-	return text, nil
+	return "", fmt.Errorf("AI request failed")
 }
