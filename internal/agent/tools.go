@@ -219,7 +219,7 @@ func (t ScheduleMutationTool) Schema() json.RawMessage {
 		return json.RawMessage(`{"type":"object","required":["updates"],"properties":{"updates":{"type":"array","minItems":1,"items":{"type":"object","required":["target_id","changes"],"properties":{"target_id":{"type":"integer"},"changes":{"type":"object","properties":{"title":{"type":"string"},"starts_at":{"type":"string"},"ends_at":{"type":"string"},"location":{"type":["string","null"]},"description":{"type":["string","null"]},"all_day":{"type":"boolean"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}}},"additionalProperties":false}`)
 	}
 	if t.Operation == "create_batch" {
-		return json.RawMessage(`{"type":"object","required":["events"],"properties":{"events":{"type":"array","minItems":1,"items":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string"},"ends_at":{"type":["string","null"]},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}},"additionalProperties":false}`)
+		return json.RawMessage(`{"type":"object","required":["events"],"properties":{"events":{"type":"array","minItems":1,"items":{"type":"object","required":["kind","title","starts_at"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string"},"ends_at":{"type":["string","null"]},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"]},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}},"additionalProperties":false}`)
 	}
 	return json.RawMessage(`{"type":"object","required":["event"],"properties":{"target_id":{"type":"integer"},"event":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":["string","null"],"description":"RFC3339"},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
 }
@@ -264,11 +264,17 @@ func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessa
 	var args struct {
 		Events []eventInput `json:"events"`
 	}
-	if err := decode(raw, &args); err != nil || len(args.Events) == 0 {
-		return ToolResult{}, fmt.Errorf("invalid batch events")
+	if err := decode(raw, &args); err != nil {
+		return ToolResult{}, fmt.Errorf("invalid batch events: %w", err)
+	}
+	if len(args.Events) == 0 {
+		return ToolResult{}, fmt.Errorf("batch events are required")
 	}
 	proposals := make([]schedule.Proposal, 0, len(args.Events))
 	for _, input := range args.Events {
+		if input.Kind == "birthday" {
+			input = t.normalizeBirthday(input)
+		}
 		event, err := input.Event()
 		if err != nil {
 			return ToolResult{}, err
@@ -285,6 +291,31 @@ func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessa
 		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
 	}{Created: result.Events, Skipped: result.Skipped})
 	return ToolResult{Content: string(data)}, err
+}
+
+// Birthday lists commonly omit the birth year and end of the all-day interval.
+// The calendar only needs month/day, so the server supplies deterministic values.
+func (t ScheduleMutationTool) normalizeBirthday(input eventInput) eventInput {
+	loc := t.Schedule.TZ
+	if loc == nil {
+		loc = time.UTC
+	}
+	if input.Timezone == "" {
+		input.Timezone = loc.String()
+	}
+	if input.StartsAt.IsZero() {
+		input.StartsAt = time.Date(time.Now().In(loc).Year(), 1, 1, 0, 0, 0, 0, loc)
+	}
+	if input.StartsAt.Year() <= 1 {
+		now := time.Now().In(loc)
+		input.StartsAt = time.Date(now.Year(), input.StartsAt.Month(), input.StartsAt.Day(), 0, 0, 0, 0, loc)
+	}
+	if input.EndsAt == nil {
+		end := input.StartsAt.AddDate(0, 0, 1)
+		input.EndsAt = &end
+	}
+	input.AllDay = true
+	return input
 }
 
 func (t ScheduleMutationTool) update(ctx context.Context, raw json.RawMessage) (ToolResult, error) {

@@ -167,6 +167,27 @@ func TestScheduleCreateBatchCreatesBirthdays(t *testing.T) {
 	}
 }
 
+func TestBirthdayBatchSuppliesMissingEndAndTimezone(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-birthday-defaults.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	tool := ScheduleMutationTool{Schedule: schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}, Operation: "create_batch"}
+	if _, err = tool.Execute(ctx, json.RawMessage(`{"events":[{"kind":"birthday","title":"День рождения: Арсений Егоров","starts_at":"2026-05-18T00:00:00Z"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	var allDay int
+	var rule string
+	if err = database.QueryRow("SELECT all_day,rrule FROM events WHERE kind='birthday'").Scan(&allDay, &rule); err != nil || allDay != 1 || !strings.Contains(rule, "FREQ=YEARLY") {
+		t.Fatalf("all_day=%d rule=%q err=%v", allDay, rule, err)
+	}
+}
+
 func TestScheduleQueryMatchesRussianInflections(t *testing.T) {
 	if !matchesQuery("Практикум по радиохимии", "радиохимия") {
 		t.Fatal("search did not match an inflectional form")
