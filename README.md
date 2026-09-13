@@ -2,29 +2,19 @@
 
 Telegram-бот для учебной группы: отвечает на учебные вопросы, работает с расписанием и дедлайнами, ищет по истории сообщений и использует AI через OpenAI-compatible API.
 
-На сервере приложение запускается из готового Docker-образа:
+Production-серверу **не нужен репозиторий и не нужен Go**. На сервере достаточно Docker Compose, файла `.env` и каталога с SQLite. Готовый образ публикуется в GHCR:
 
 ```text
 ghcr.io/yaroslavsavateykin/eleven_bot:latest
 ```
 
-Собирать проект на сервере не нужно. Docker Compose только скачивает опубликованный образ и запускает его.
+## 1. Установить Docker
 
-## Что понадобится
-
-- Linux-сервер, например Ubuntu 22.04/24.04 или Debian;
-- Telegram Bot Token от `@BotFather`;
-- numeric Telegram ID администратора;
-- доступ к OpenAI-compatible API;
-- Docker и Docker Compose.
-
-## 1. Установка Docker
-
-Подключитесь к серверу по SSH:
+Для Ubuntu/Debian:
 
 ```bash
 sudo apt update
-sudo apt install -y git curl
+sudo apt install -y curl
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker "$USER"
 ```
@@ -35,101 +25,157 @@ sudo usermod -aG docker "$USER"
 newgrp docker
 ```
 
-Проверка:
+Проверьте:
 
 ```bash
 docker --version
 docker compose version
 ```
 
-## 2. Установка Eleven Bot
-
-Клонируйте репозиторий. На сервере нужны в основном `docker-compose.yml`, `.env` и каталог с базой.
+## 2. Создать директорию приложения
 
 ```bash
-git clone https://github.com/yaroslavsavateykin/eleven_bot.git
-cd eleven_bot
-
-cp .env.example .env
-
-mkdir -p data
-sudo chown -R 1000:1000 data
+sudo mkdir -p /opt/eleven-bot/data
+sudo chown -R "$USER":"$USER" /opt/eleven-bot
+cd /opt/eleven-bot
 ```
 
-Откройте конфигурацию:
+Никакого `git clone` на сервере не требуется.
+
+## 3. Создать docker-compose.yml
+
+Создайте файл:
 
 ```bash
-nano .env
+nano docker-compose.yml
 ```
 
-В начале файла уже указан готовый Docker-образ:
+И вставьте:
 
-```env
-ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:latest
+```yaml
+services:
+  app:
+    image: ${ELEVEN_BOT_IMAGE:-ghcr.io/yaroslavsavateykin/eleven_bot:latest}
+    pull_policy: always
+    user: "1000:1000"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./data:/data
+
+    ports:
+      - "6767:6767"
+
+    restart: unless-stopped
+    init: true
+    read_only: true
+
+    security_opt:
+      - no-new-privileges:true
+
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    healthcheck:
+      test: ["CMD", "/app", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 ```
 
-Обычно оставляйте `:latest`. Если нужен фиксированный релиз, можно закрепить конкретную версию:
+По умолчанию Compose использует последний опубликованный образ `:latest`.
+
+Чтобы закрепить конкретный релиз, достаточно позже указать в `.env`, например:
 
 ```env
 ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:v0.1.0
 ```
 
-Основные настройки:
+## 4. Создать .env
+
+Создайте:
+
+```bash
+nano .env
+```
+
+Пример:
 
 ```env
+# Docker image
+ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:latest
+
 # Telegram
-TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_TOKEN=
 TELEGRAM_GROUP_CHAT_ID=
 TELEGRAM_DISCOVERY_MODE=true
-ADMIN_TELEGRAM_USER_ID=123456789
+ADMIN_TELEGRAM_USER_ID=
 
 # Группа
 GROUP_NAME=411 группа
 GROUP_TIMEZONE=Europe/Moscow
 
-# База
+# Необязательная опорная учебная неделя
+ACADEMIC_REFERENCE_WEEK_START=2026-09-07
+ACADEMIC_REFERENCE_WEEK_PARITY=odd
+
+# SQLite
 DATABASE_PATH=/data/app.db
 
-# Веб
+# Web
 HTTP_ADDR=:6767
 BASE_URL=http://SERVER_IP:6767
-ADMIN_PASSWORD=очень-длинный-пароль
-EXTERNAL_API_TOKEN=ещё-один-длинный-случайный-токен
+ADMIN_PASSWORD=change-this-to-a-long-random-password
+EXTERNAL_API_TOKEN=change-me
 
 # AI
-AI_BASE_URL=https://your-ai-endpoint.example/v1
-AI_API_KEY=...
-AI_TEXT_MODEL=...
-AI_VISION_MODEL=...
+AI_BASE_URL=
+AI_API_KEY=
+AI_TEXT_MODEL=
+AI_VISION_MODEL=
 AI_STT_MODEL=
 
-# Обычно менять не нужно
+# Agent
 AI_TOOL_MODE=native
 AI_AGENT_MODEL=
 AI_STRICT_TOOLS=false
 AI_DISABLE_PARALLEL_TOOLS=false
 AI_CONTEXT_BYTES=131072
+
+# Остальное
 RAW_MESSAGE_RETENTION_HOURS=48
 GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
 ```
 
-Секреты из `.env` не добавляйте в Git.
+Минимально заполните:
 
-## 3. Первый запуск
+- `TELEGRAM_BOT_TOKEN`;
+- `ADMIN_TELEGRAM_USER_ID`;
+- `AI_BASE_URL`;
+- `AI_API_KEY`;
+- `AI_TEXT_MODEL`;
+- `ADMIN_PASSWORD`;
+- `EXTERNAL_API_TOKEN`;
+- `BASE_URL`.
 
-Сначала скачайте готовый образ:
+## 5. Первый запуск
+
+Скачайте готовый образ:
 
 ```bash
 docker compose pull
 ```
 
-Затем запустите:
+Запустите:
 
 ```bash
 docker compose up -d
 ```
 
-Проверка:
+Проверьте:
 
 ```bash
 docker compose ps
@@ -142,9 +188,9 @@ curl http://127.0.0.1:6767/healthz
 docker compose logs -f app
 ```
 
-На сервере ничего не компилируется: `docker compose pull` получает уже собранный образ из GHCR.
+На сервере ничего не компилируется.
 
-## 4. Получение Telegram Group Chat ID
+## 6. Получить TELEGRAM_GROUP_CHAT_ID
 
 Для первого запуска оставьте:
 
@@ -153,9 +199,7 @@ TELEGRAM_DISCOVERY_MODE=true
 TELEGRAM_GROUP_CHAT_ID=
 ```
 
-При этом `ADMIN_TELEGRAM_USER_ID` уже должен быть заполнен.
-
-После запуска отправьте в нужной Telegram-группе:
+В нужной Telegram-группе отправьте от аккаунта администратора:
 
 ```text
 /chatid
@@ -174,41 +218,25 @@ TELEGRAM_GROUP_CHAT_ID=-1001234567890
 TELEGRAM_DISCOVERY_MODE=false
 ```
 
-Пересоздайте контейнер:
+Примените изменения:
 
 ```bash
 docker compose up -d --force-recreate
 ```
 
-Discovery mode после настройки лучше всегда держать выключенным.
+Discovery mode после этого должен оставаться выключенным.
 
-## 5. Проверка Telegram-бота
+## Обновление
 
-Например:
-
-```text
-/today
-/week
-/help
-/ask что завтра по парам?
-```
-
-В группе бот реагирует на команды, прямое упоминание и reply на сообщение самого бота.
-
-В личных сообщениях доступ разрешён только пользователю из `ADMIN_TELEGRAM_USER_ID`.
-
-## Обновление сервера
-
-Если используется `:latest`, обновление выглядит так:
+Если используется `:latest`:
 
 ```bash
-cd eleven_bot
-git pull
+cd /opt/eleven-bot
 docker compose pull
 docker compose up -d
 ```
 
-Проверка после обновления:
+Проверка:
 
 ```bash
 docker compose ps
@@ -216,17 +244,17 @@ curl http://127.0.0.1:6767/healthz
 docker compose logs --tail=100 app
 ```
 
-Никакого `docker compose build` на сервере не требуется.
+Никакого `git pull` и никакого `docker compose build` на сервере не требуется.
 
-## Откат на конкретный релиз
+## Откат
 
-Откройте `.env`:
+В `.env` замените:
 
-```bash
-nano .env
+```env
+ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:latest
 ```
 
-И вместо `:latest` укажите нужный release tag:
+на нужную версию:
 
 ```env
 ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:v0.1.0
@@ -239,24 +267,12 @@ docker compose pull
 docker compose up -d
 ```
 
-Чтобы вернуться на последнюю версию:
-
-```env
-ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:latest
-```
-
-## Управление контейнером
+## Управление
 
 Логи:
 
 ```bash
 docker compose logs -f app
-```
-
-Последние 100 строк:
-
-```bash
-docker compose logs --tail=100 app
 ```
 
 Перезапуск:
@@ -277,19 +293,20 @@ docker compose down
 docker compose up -d
 ```
 
-Контейнер настроен с `restart: unless-stopped`, поэтому после перезагрузки сервера он запускается автоматически вместе с Docker.
+Благодаря `restart: unless-stopped` контейнер автоматически поднимется после перезагрузки сервера вместе с Docker.
 
-## Резервная копия базы
+## Резервная копия SQLite
 
-SQLite хранится в:
+База находится здесь:
 
 ```text
-./data/app.db
+/opt/eleven-bot/data/app.db
 ```
 
-Простой вариант резервной копии:
+Простой вариант:
 
 ```bash
+cd /opt/eleven-bot
 docker compose stop app
 cp data/app.db "$HOME/eleven_bot-$(date +%F-%H%M).db"
 docker compose start app
@@ -311,97 +328,53 @@ sudo ufw allow 6767/tcp
 http://SERVER_IP:6767
 ```
 
-Для постоянного публичного сервера лучше использовать домен, HTTPS и reverse proxy, например Caddy или Nginx, а порт `6767` наружу не публиковать.
+Для постоянного публичного сервера лучше поставить Caddy/Nginx с HTTPS и не публиковать `6767` напрямую в интернет.
 
-## Как выпустить новый релиз
+## Выпуск нового релиза
 
-В репозитории есть отдельный GitHub Action:
+В GitHub:
 
 ```text
 Actions → Release → Run workflow
 ```
 
-Он запускается вручную и принимает номер версии, например:
+Введите версию, например:
 
 ```text
 v0.1.0
 ```
 
-Release workflow:
+Release Action:
 
-1. проверяет формат версии;
-2. запускает `go test ./...`;
-3. запускает `go vet ./...`;
-4. запускает тесты веб-части;
-5. собирает Docker-образ в GitHub Actions;
-6. публикует его в GHCR;
-7. создаёт теги образа `v0.1.0`, `0.1.0`, `0.1`, `0`, `latest` и `sha-...`;
-8. создаёт GitHub Release с автоматически сгенерированными release notes.
+1. запускает Go-тесты и `go vet`;
+2. запускает тесты web-части;
+3. собирает Docker image в GitHub Actions;
+4. публикует image в GHCR;
+5. обновляет `:latest`;
+6. публикует version tags;
+7. создаёт GitHub Release с release notes.
 
-Для публикации образа workflow использует repository secret:
-
-```text
-GHCR_TOKEN
-```
-
-После успешного release на сервере достаточно:
+После этого на сервере достаточно:
 
 ```bash
+cd /opt/eleven-bot
 docker compose pull
 docker compose up -d
 ```
 
-## CI и Release
+Обычный CI ничего не публикует — публикация production image выполняется только через отдельный Release workflow.
 
-Обычный CI находится в:
+## Для разработки
 
-```text
-.github/workflows/ci.yml
-```
-
-Он запускает тесты на push и pull request, но ничего не публикует.
-
-Ручная публикация релиза находится в:
-
-```text
-.github/workflows/release.yml
-```
-
-Таким образом обычный push в `main` не создаёт новый Docker-образ автоматически.
-
-## Разработка локально
-
-Для разработки без Docker нужен Go 1.27:
+Исходный код нужен только на машине разработчика или в CI:
 
 ```bash
+git clone https://github.com/yaroslavsavateykin/eleven_bot.git
+cd eleven_bot
+
 go test ./...
 go vet ./...
 go run ./cmd/app
 ```
 
-Также доступны:
-
-```bash
-make test
-make vet
-make run
-```
-
-При необходимости локально собрать Docker-образ можно обычным `docker build`, но для production-сервера это не требуется.
-
-## Структура проекта
-
-```text
-cmd/app/                   точка входа
-internal/                  основная логика
-prompts/                   AI-промпты
-docs/                      архитектура и OpenAPI
-data/                      SQLite
-.github/workflows/ci.yml   обычные проверки
-.github/workflows/release.yml
-Dockerfile                 сборка production image
-docker-compose.yml         запуск готового image
-.env.example
-```
-
-Подробности архитектуры находятся в [docs/architecture.md](docs/architecture.md), правила для AI-агентов — в [AI_AGENTS.md](AI_AGENTS.md).
+Внутренняя архитектура описана в [docs/architecture.md](docs/architecture.md), правила для AI-агентов — в [AI_AGENTS.md](AI_AGENTS.md).
