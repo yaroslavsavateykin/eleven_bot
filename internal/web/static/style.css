@@ -52,6 +52,14 @@ article span{font-size:12px;color:var(--muted);overflow-wrap:anywhere;max-width:
 article .category{max-width:100%;font-size:10px;color:#365747;background:var(--green-soft);padding:1px 5px;border-radius:4px}
 article .category-event,article .category-quiz{color:#65427e;background:#eee4f7}
 article .category-birthday{color:#8a294c;background:#f9e0e9}
+article.birthday-event{grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:14px;margin:10px 0;padding:16px;border:1px solid #e8cbd5;border-left:3px solid #b75c7d;border-radius:12px;background:#fff5f8}
+.birthday-event:last-child{border-bottom:1px solid #e8cbd5}
+.birthday-event .birthday-icon{display:grid;place-items:center;width:44px;height:44px;max-width:none;border-radius:12px;background:#f8e3eb;font-size:25px;line-height:1}
+.birthday-event .event-details{gap:3px}
+.birthday-event strong{color:#542c3c;font-size:16px;font-weight:600;line-height:1.4}
+.birthday-event .category-birthday{padding:0;background:none;color:#8a3655;font-size:11px;font-weight:500;letter-spacing:.02em}
+.birthday-event .birthday-note{color:#795563;font-size:12px}
+@media(max-width:540px){article.birthday-event{grid-template-columns:38px minmax(0,1fr);gap:10px;padding:13px 12px}.birthday-event .birthday-icon{width:38px;height:38px;font-size:23px}.birthday-event>span:not(.birthday-icon){grid-column:2;max-width:none}.birthday-event strong{font-size:15px}}
 article .category-test,article .category-exam,article .category-deadline{color:#7b430b;background:#f7e5c7;border:1px solid #d5a15c}
 article .category-other{color:#4c5e57;background:#dfe6e2}
 article .active-lesson{max-width:100%;color:#285d44;font-size:11px;font-weight:600;padding:2px 7px;border:1px solid #ffffffbd;border-radius:8px;background:linear-gradient(135deg,#f5fff3d9,#c9e4d699);box-shadow:inset 0 1px 0 #fff}

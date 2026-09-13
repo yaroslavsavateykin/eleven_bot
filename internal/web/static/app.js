@@ -169,16 +169,27 @@ if (typeof document !== 'undefined') {
        section.replaceChildren(heading);
       for (const event of events) {
         const category = eventCategory(event);
-        const article = node('article', undefined, `importance-${category.priority}${event.all_day ? ' all-day-event' : ''}`);
+        const birthday = category.key === 'birthday';
+        const article = node('article', undefined, `importance-${category.priority}${event.all_day ? ' all-day-event' : ''}${birthday ? ' birthday-event' : ''}`);
         const time = node('time', event.all_day ? (category.key === 'deadline' ? 'Дедлайн' : 'Весь день') : format(event.starts_at, { hour: '2-digit', minute: '2-digit' }) +
           (event.ends_at ? ` – ${format(event.ends_at, { hour: '2-digit', minute: '2-digit' })}` : ''));
         time.dateTime = event.starts_at;
         const details = node('div', undefined, 'event-details');
         const badge = node('span', category.label, `category category-${category.key}`);
-        details.append(node('strong', event.title), badge);
+        if (birthday) {
+          const icon = node('span', '🎂', 'birthday-icon');
+          icon.setAttribute('aria-hidden', 'true');
+          article.append(icon);
+          const name = event.title.replace(/^день рождения\s*[:—–-]?\s*/iu, '').trim() || event.title;
+          details.append(badge, node('strong', name));
+          time.textContent = 'Весь день · Поздравляем!';
+          time.className = 'birthday-note';
+          details.append(time);
+        } else details.append(node('strong', event.title), badge);
         if (event.ends_at && !event.all_day) details.append(node('span', `${Math.round((Date.parse(event.ends_at) - Date.parse(event.starts_at)) / 60000)} мин`, 'duration'));
         if (isCurrentLesson(event, current)) details.append(node('span', 'Сейчас идёт', 'active-lesson'));
-        article.append(time, details);
+        if (birthday) article.append(details);
+        else article.append(time, details);
         if (event.location) article.append(node('span', event.location));
         section.append(article);
       }

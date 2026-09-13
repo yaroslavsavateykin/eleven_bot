@@ -200,6 +200,9 @@ type ScheduleMutationTool struct {
 
 func (t ScheduleMutationTool) Name() string { return "schedule_" + t.Operation }
 func (t ScheduleMutationTool) Description() string {
+	if t.Operation == "cancel" {
+		return "Cancel an entire event or entire recurring series. NEVER use for one date in a series; use schedule_exclude_occurrence instead."
+	}
 	if t.Operation == "create_batch" {
 		return "Creates multiple independent schedule events in one server-side batch. Use for pasted lists such as birthdays; valid events are saved while duplicates or invalid rows are reported."
 	}

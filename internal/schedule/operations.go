@@ -196,6 +196,16 @@ func starts(e Event, from, to time.Time) ([]time.Time, error) {
 	r.DTStart(e.StartsAt.In(loc))
 	var out []time.Time
 	for t := r.After(from, true); !t.IsZero() && t.Before(to); t = r.After(t, false) {
+		excluded := false
+		for _, date := range e.ExcludedDates {
+			if t.In(loc).Format("2006-01-02") == date {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
+			continue
+		}
 		out = append(out, t)
 		if len(out) > 2000 {
 			return nil, fmt.Errorf("recurrence too dense")
@@ -512,6 +522,10 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 		return e, err
 	}
 	for i := range all {
+		all[i].ExcludedDates, err = loadExclusions(ctx, tx, all[i].ID)
+		if err != nil {
+			return e, err
+		}
 		r, er := tx.QueryContext(ctx, "SELECT t.name FROM tags t JOIN event_tags et ON et.tag_id=t.id WHERE et.event_id=? ORDER BY t.name", all[i].ID)
 		if er != nil {
 			return e, er

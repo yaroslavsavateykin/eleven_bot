@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1089,7 +1090,7 @@ func (s Service) announcementDigest(changes []announcementChange) string {
 	lines := []string{"*Обновления расписания:*"}
 	for _, change := range changes {
 		e := change.Proposal.Event
-		verb := map[string]string{"event_create": "Добавлено", "event_update": "Обновлено", "event_cancel": "Отменено"}[change.Kind]
+		verb := map[string]string{"event_create": "Добавлено", "event_update": "Обновлено", "event_cancel": "Отменено", "event_exclude_occurrence": "Исключено занятие на дату"}[change.Kind]
 		when := e.StartsAt.In(s.Schedule.TZ).Format("02.01")
 		if recurrence := recurrenceSummary(e, s.Schedule.TZ); recurrence != "" {
 			when = recurrence
@@ -1217,10 +1218,11 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 	result, err := botAgent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, current.TelegramMessageID), Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
 	if err != nil {
 		slog.Error("agent", "error", err)
+		text := agentErrorReply(err)
 		if replyTo != 0 {
-			s.sendReply(ctx, b, chatID, replyTo, "Не удалось обработать запрос. Попробуйте отправить его ещё раз.")
+			s.sendReply(ctx, b, chatID, replyTo, text)
 		} else {
-			s.send(ctx, b, chatID, "Не удалось обработать запрос. Попробуйте отправить его ещё раз.")
+			s.send(ctx, b, chatID, text)
 		}
 		return
 	}
@@ -1229,6 +1231,21 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	s.sendMarkdown(ctx, b, chatID, limit(result.Reply, 1800))
+}
+
+func agentErrorReply(err error) string {
+	var provider *ai.Error
+	if errors.As(err, &provider) {
+		switch provider.Kind {
+		case "provider_configuration":
+			return "AI-сервис отклонил запрос. Администратору нужно проверить модель, доступ и режим инструментов в настройках."
+		case "provider_protocol":
+			return "AI-сервис вернул неполный или некорректный ответ. Запрос не удалось завершить; если изменения уже были сохранены, проверьте расписание перед повтором."
+		case "provider_transport":
+			return "AI-сервис временно недоступен. Попробуйте позже; ранее сохранённые изменения остаются в расписании."
+		}
+	}
+	return "Не удалось завершить запрос. Проверьте расписание перед повтором: часть изменений могла сохраниться."
 }
 
 func recurrenceSummary(e schedule.Event, loc *time.Location) string {

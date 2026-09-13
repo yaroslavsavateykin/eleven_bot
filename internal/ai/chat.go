@@ -41,9 +41,12 @@ type AssistantTurn struct {
 type Error struct {
 	Kind   string
 	Status int
+	Reason string
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("%s (HTTP %d)", e.Kind, e.Status) }
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s (HTTP %d; reason=%s)", e.Kind, e.Status, e.Reason)
+}
 
 type wireCall struct {
 	Index    int    `json:"index,omitempty"`
@@ -98,7 +101,11 @@ func (s Service) Chat(ctx context.Context, r ChatRequest) (AssistantTurn, error)
 		}
 		tools = append(tools, map[string]any{"type": "function", "function": f})
 	}
-	payload := map[string]any{"model": s.Model, "messages": messages, "max_tokens": 4096}
+	model := s.Model
+	if s.AgentModel != "" {
+		model = s.AgentModel
+	}
+	payload := map[string]any{"model": model, "messages": messages, "max_tokens": 4096, "stream": false}
 	if len(tools) > 0 {
 		payload["tools"] = tools
 		payload["tool_choice"] = "auto"
@@ -130,14 +137,19 @@ func (s Service) requestChat(ctx context.Context, r ChatRequest, payload map[str
 			data, err = io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
 			resp.Body.Close()
 		}
-		slog.InfoContext(ctx, "model request", "run_id", r.RunID, "round", r.Round, "model", s.Model, "retry_count", attempt, "provider_http_status", status, "duration", time.Since(start))
+		slog.InfoContext(ctx, "model request", "run_id", r.RunID, "round", r.Round, "model", payload["model"], "retry_count", attempt, "provider_http_status", status, "duration", time.Since(start))
 		if err == nil && status >= 200 && status < 300 {
 			if len(data) > 2<<20 {
 				return AssistantTurn{}, &Error{Kind: "provider_protocol", Status: status}
 			}
 			turn, decodeErr := decodeAssistant(data)
 			if decodeErr != nil {
-				return turn, &Error{Kind: "provider_protocol", Status: status}
+				reason := "malformed_completion"
+				if e, ok := decodeErr.(*Error); ok && e.Reason != "" {
+					reason = e.Reason
+				}
+				slog.WarnContext(ctx, "provider protocol rejected", "run_id", r.RunID, "round", r.Round, "reason", reason, "response_bytes", len(data), "content_type", resp.Header.Get("Content-Type"), "finish_reason", turn.FinishReason, "model", turn.Model)
+				return turn, &Error{Kind: "provider_protocol", Status: status, Reason: reason}
 			}
 			if s.StrictTools && s.ToolMode != "legacy_json" {
 				normalizeStrictCalls(&turn, r.Tools)
@@ -173,9 +185,13 @@ func decodeAssistant(data []byte) (AssistantTurn, error) {
 	var out AssistantTurn
 	calls := map[int]wireCall{}
 	consume := func(data []byte) error {
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal(data, &envelope) == nil && len(envelope["error"]) > 0 && string(envelope["error"]) != "null" {
+			return &Error{Kind: "provider_protocol", Reason: "upstream_error_envelope"}
+		}
 		var c completion
 		if json.Unmarshal(data, &c) != nil {
-			return &Error{Kind: "provider_protocol"}
+			return &Error{Kind: "provider_protocol", Reason: "invalid_completion_json"}
 		}
 		if c.Model != "" {
 			out.Model = c.Model
@@ -240,13 +256,16 @@ func decodeAssistant(data []byte) (AssistantTurn, error) {
 	for _, i := range indexes {
 		c := calls[i]
 		if c.ID == "" || c.Function.Name == "" || c.Type != "function" || ids[c.ID] {
-			return out, &Error{Kind: "provider_protocol"}
+			return out, &Error{Kind: "provider_protocol", Reason: "invalid_tool_call_identity"}
 		}
 		ids[c.ID] = true
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: c.ID, Name: c.Function.Name, Arguments: json.RawMessage(c.Function.Arguments)})
 	}
+	if out.FinishReason == "length" && len(out.ToolCalls) > 0 {
+		return out, &Error{Kind: "provider_protocol", Reason: "completion_truncated"}
+	}
 	if strings.TrimSpace(out.Content) == "" && len(out.ToolCalls) == 0 {
-		return out, &Error{Kind: "provider_protocol"}
+		return out, &Error{Kind: "provider_protocol", Reason: "empty_assistant_turn"}
 	}
 	return out, nil
 }

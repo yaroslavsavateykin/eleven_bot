@@ -15,6 +15,7 @@ import (
 )
 
 type Event struct {
+	ExcludedDates     []string   `json:"excluded_dates,omitempty"`
 	ID                int64      `json:"id"`
 	GroupID           int64      `json:"group_id"`
 	Kind              string     `json:"kind"`
@@ -246,7 +247,12 @@ func (s Service) event(ctx context.Context, where string, arg any) (Event, error
 		rows.Scan(&t)
 		e.Tags = append(e.Tags, t)
 	}
-	return e, nil
+	if err = rows.Err(); err != nil {
+		return e, err
+	}
+	rows.Close()
+	e.ExcludedDates, err = loadExclusions(ctx, s.DB, e.ID)
+	return e, err
 }
 func (s Service) List(ctx context.Context, from, to time.Time, tags []string) ([]Event, error) {
 	rows, err := s.DB.QueryContext(ctx, "SELECT id FROM events WHERE group_id=? AND status='active' AND deleted_at IS NULL AND starts_at<? ORDER BY starts_at", s.GroupID, to.UTC().Format(time.RFC3339Nano))

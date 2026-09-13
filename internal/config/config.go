@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	AIAgentModel                                                                                   string
 	AIStrictTools, AIDisableParallelTools                                                          bool
 	AIToolMode                                                                                     string
 	AIContextBytes                                                                                 int
@@ -45,6 +46,7 @@ func Load() (Config, error) {
 	}
 	c.AIContextBytes = 131072
 	var err error
+	c.AIAgentModel = os.Getenv("AI_AGENT_MODEL")
 	if v := os.Getenv("AI_CONTEXT_BYTES"); v != "" {
 		c.AIContextBytes, err = strconv.Atoi(v)
 		if err != nil || c.AIContextBytes < 16384 {

@@ -71,7 +71,7 @@ func main() {
 	semester := schedule.Semester{Start: c.Semester.Start, End: c.Semester.End}
 	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc, Semester: semester}
 	conversationService := conversation.Service{DB: d, MaxDepth: 16, MaxChars: 3000}
-	aiClient := ai.Service{StrictTools: c.AIStrictTools, DisableParallelTools: c.AIDisableParallelTools, ToolMode: c.AIToolMode, BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel}
+	aiClient := ai.Service{AgentModel: c.AIAgentModel, StrictTools: c.AIStrictTools, DisableParallelTools: c.AIDisableParallelTools, ToolMode: c.AIToolMode, BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel}
 	botAgent := agent.Agent{
 		Client: aiClient,
 		Tools: []agent.Tool{
@@ -79,6 +79,7 @@ func main() {
 			agent.GroupSearchTool{Conversation: conversationService, GroupID: groupID},
 		},
 		AdminTools: []agent.Tool{
+			agent.ScheduleExcludeTool{Schedule: s, Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "create", Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "create_batch", Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "update", Announce: true},

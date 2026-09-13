@@ -6,6 +6,11 @@
 
 ## Возможности
 
+- Исключение одной даты из повторяющейся серии: `schedule_exclude_occurrence`
+  сохраняет все остальные даты. Для замены занятия исключается исходное вхождение
+  и создаётся отдельное событие. Исключения сохраняются в SQLite и учитываются
+  в расписании и проверках пересечений. `schedule_cancel` отменяет всю серию.
+
 - Расписание, разовые события, пары, дедлайны и повторяющиеся занятия.
 - Единый диалог для учебных вопросов, расписания, изменений и поиска по истории группы.
 - Поиск по сохранённым сообщениям группы для вопросов о домашних заданиях, отчётах и объявлениях.
@@ -249,6 +254,12 @@ Telegram -> Conversation context -> Agent -> AI native tool call
 Подробнее: [`docs/architecture.md`](docs/architecture.md). Правила для AI-агентов: [`AI_AGENTS.md`](AI_AGENTS.md).
 
 ### Native AI orchestration
+
+For gateways with round-robin model combos, set `AI_AGENT_MODEL` to a stable direct
+route (for example `cx/gpt-5.6-luna` on the inspected 9router installation).
+When empty, agent requests use `AI_TEXT_MODEL`. Native requests explicitly send
+`stream:false`; streaming-shaped gateway responses remain supported. Protocol
+failures log a safe reason, response byte count and content type, never the body.
 
 Endpoint `/chat/completions` должен поддерживать native function tools и `tool_choice=auto`.
 `AI_TOOL_MODE=native` по умолчанию, `legacy_json` — явный opt-in для endpoint без native tools; silent fallback запрещён.

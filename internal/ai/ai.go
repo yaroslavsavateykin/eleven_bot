@@ -16,6 +16,7 @@ import (
 )
 
 type Service struct {
+	AgentModel                                 string
 	ToolMode                                   string
 	DisableParallelTools                       bool
 	StrictTools                                bool
