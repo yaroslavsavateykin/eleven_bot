@@ -71,7 +71,7 @@ func main() {
 	semester := schedule.Semester{Start: c.Semester.Start, End: c.Semester.End}
 	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc, Semester: semester}
 	conversationService := conversation.Service{DB: d, MaxDepth: 16, MaxChars: 3000}
-	aiClient := ai.Service{BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel}
+	aiClient := ai.Service{StrictTools: c.AIStrictTools, DisableParallelTools: c.AIDisableParallelTools, ToolMode: c.AIToolMode, BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel}
 	botAgent := agent.Agent{
 		Client: aiClient,
 		Tools: []agent.Tool{
@@ -85,7 +85,8 @@ func main() {
 			agent.ScheduleMutationTool{Schedule: s, Operation: "update_batch", Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "cancel", Announce: true},
 		},
-		MaxRounds: 10,
+		MaxRounds:    10,
+		ContextBytes: c.AIContextBytes,
 	}
 	w := webapp.New(s, c.GroupName, loc)
 	r := chi.NewRouter()

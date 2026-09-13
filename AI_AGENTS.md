@@ -1,6 +1,6 @@
 # Инструкция для AI-агентов
 
-Этот файл обязателен для агента, который меняет код в `eleven_bot`. Он дополняет `AGENT.md`: `AGENT.md` содержит короткие доменные инварианты, этот файл описывает рабочий процесс и критичные связи.
+Этот файл обязателен для агента, который меняет код в `eleven_bot`, и описывает доменные инварианты и критичные связи.
 
 ## Цель проекта
 
@@ -41,8 +41,9 @@
 
 - AI не получает SQL, shell или произвольный доступ к внутренним сервисам.
 - Agent использует только зарегистрированные tools. `schedule_query` и `group_search` возвращают компактные group-scoped данные.
-- Любое добавление tool result в prompt обязано соблюдать prompt budget. Не возвращайте `AI prompt too long` на обычный вопрос о расписании.
-- Не показывайте пользователю смешанный gateway output: если provider дописывает JSON после обычного текста, извлекайте `reply`, а не отправляйте protocol envelope с `tool_calls`.
+- Native tools определяются Tool.Schema(); история передаётся реальными ролями. До 10 tool rounds плюс финальный turn. Не возвращайте JSON-envelope orchestration в prompt.
+- Tool results сохраняются целиком через role=tool с provider tool_call_id. Старую историю можно удалить; при превышении защищённого контекста нужен явный context_limit. AI_CONTEXT_BYTES по умолчанию 131072.
+- Mutation invocation receipt сохраняется в одной транзакции с изменением; scope — Telegram chat/message и canonical arguments. Batch использует receipts по элементам. Не заменяйте это process-local дедупликацией.
 - Prompts находятся в `prompts/*.md`, встраиваются через `go:embed` и требуют тестов при изменении поведения.
 
 ## Docker, секреты и релизы

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -765,7 +766,7 @@ func (s Service) askReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo
 		send("AI не настроен.")
 		return
 	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
+	result, err := s.Agent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, replyTo), Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
 	if err != nil {
 		slog.Error("ask agent", "error", err)
 		send("Не удалось получить ответ от AI. Попробуйте позже.")
@@ -833,8 +834,6 @@ func (s Service) allowed(chatID, userID int64, private bool) bool {
 	}
 	return s.ChatID != 0 && chatID == s.ChatID
 }
-
-func privateCommandAllowed(command string) bool { return command == "/sync" }
 
 func (s Service) askPrivate(ctx context.Context, b *bot.Bot, chatID int64, question string, current conversation.Message) {
 	s.runAgentReply(ctx, b, chatID, 0, current, agent.ModeAdminPrivate)
@@ -987,9 +986,40 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 			messages = chain
 		}
 	}
+	// Preserve the live current text (including long pasted batches) and the
+	// immediate reply parent even when the graph's preliminary history is bounded.
+	if current.ReplyToMessageID != nil {
+		if parent, err := s.conversations().ByID(ctx, *current.ReplyToMessageID); err == nil {
+			found := false
+			for i := range messages {
+				if messages[i].ID == parent.ID {
+					messages[i] = parent
+					found = true
+				}
+			}
+			if !found {
+				messages = append([]conversation.Message{parent}, messages...)
+			}
+		}
+	}
+	if len(messages) > 0 && (messages[len(messages)-1].ID == current.ID || current.ID == 0) {
+		messages[len(messages)-1] = current
+	} else {
+		messages = append(messages, current)
+	}
+	if current.ID != 0 {
+		kept := messages[:0]
+		for _, m := range messages {
+			if m.ID <= current.ID {
+				kept = append(kept, m)
+			}
+		}
+		messages = kept
+		sort.SliceStable(messages, func(i, j int) bool { return messages[i].ID < messages[j].ID })
+	}
 	botAgent := s.Agent
 	botAgent.Progress = func(text string) { s.updateThinking(ctx, b, chatID, text) }
-	result, err := botAgent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
+	result, err := botAgent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, current.TelegramMessageID), Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
 	if err != nil {
 		slog.Error("agent", "error", err)
 		if replyTo != 0 {
@@ -1004,55 +1034,6 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	s.send(ctx, b, chatID, limit(result.Reply, 1800))
-}
-
-func (s Service) eventSummary(e schedule.Event, p schedule.Proposal) string {
-	summary := "Добавил"
-	if p.Operation == "cancel" {
-		return "Отменил: " + e.Title + "."
-	}
-	if p.Operation == "update" {
-		summary = "Обновил"
-	}
-	when := e.StartsAt.In(s.Schedule.TZ).Format("02.01")
-	if recurrence := recurrenceSummary(e, s.Schedule.TZ); recurrence != "" {
-		when = recurrence
-	}
-	if !e.AllDay {
-		when += ", " + e.StartsAt.In(s.Schedule.TZ).Format("15:04")
-	}
-	today := time.Now().In(s.Schedule.TZ).Format("2006-01-02")
-	if e.RRule == nil && e.StartsAt.In(s.Schedule.TZ).Format("2006-01-02") == today {
-		when = "сегодня"
-		if !e.AllDay {
-			when += ", " + e.StartsAt.In(s.Schedule.TZ).Format("15:04")
-		}
-	} else if e.RRule == nil && e.StartsAt.In(s.Schedule.TZ).Format("2006-01-02") == time.Now().In(s.Schedule.TZ).AddDate(0, 0, 1).Format("2006-01-02") {
-		when = "завтра"
-		if !e.AllDay {
-			when += ", " + e.StartsAt.In(s.Schedule.TZ).Format("15:04")
-		}
-	}
-	if e.EndsAt != nil && !e.AllDay {
-		when += "–" + e.EndsAt.In(s.Schedule.TZ).Format("15:04")
-	}
-	if e.RecurrenceHorizon == "semester" {
-		when += ", до конца семестра"
-	} else if e.RecurrenceHorizon == "default" {
-		when += ", на ближайшие 16 недель"
-	}
-	if e.Category == "deadline" {
-		summary += " дедлайн: " + e.Title + " — " + when + "."
-	} else {
-		summary += ": " + e.Title + " — " + when + "."
-	}
-	for _, warning := range e.Warnings {
-		summary += fmt.Sprintf("\nПересекается с: %s, %s", limit(warning.Event.Title, 80), warning.StartsAt.In(s.Schedule.TZ).Format("02.01 15:04"))
-	}
-	if e.MergedDuplicateID != 0 {
-		summary += fmt.Sprintf("\nОбъединил с дубликатом #%d.", e.MergedDuplicateID)
-	}
-	return summary
 }
 
 func recurrenceSummary(e schedule.Event, loc *time.Location) string {

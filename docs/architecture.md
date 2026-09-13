@@ -9,15 +9,17 @@ flowchart TD
     ING --> DB[(SQLite message graph)]
     ING --> ROUTE[Transport trigger policy]
     ROUTE --> CONV[Reply-chain context]
-    CONV --> AGENT[Bounded Agent]
-    AGENT --> LLM[OpenAI-compatible client]
-    AGENT --> TOOLS[schedule_query/create/update/cancel, group_search]
-    TOOLS --> SCH[Domain services]
-    SCH --> DB
-    AGENT --> FIN[Owner-checked receipt finalization]
-    FIN --> SEND[Telegram sender]
-    SEND --> TG
+    CONV --> AGENT[Bounded Agent: Chat messages + native tools]
+    AGENT --> LLM[OpenAI Chat Completions: tools + tool_choice auto]
+    LLM --> CALL[Assistant tool_calls with provider IDs]
+    CALL --> TOOLS[Registry + schema + auth validation]
+    TOOLS --> SCH[Domain services + Apply/ApplyImport transactions]
+    SCH --> RES[role=tool result with matching tool_call_id]
+    RES --> LLM
+    LLM --> FIN[Final natural language reply]
+    FIN --> SEND[Telegram sender with provisional edit]
     SEND --> DB
+    SEND --> TG
     ADMIN[Authorized admin private chat] --> ING
     SCH --> DASH[Dashboard/API immediately]
     SCH --> CHANGE[Change log + pending announcement queue]
@@ -45,9 +47,17 @@ The bot reacts to commands, replies to a persisted bot message, and no other ord
 
 ## Agent And Tools
 
-The agent accepts embedded system instructions, the reply chain, current time and timezone, and tool definitions. It may make one tool call per turn for at most four turns. Unknown tools, malformed responses, tool errors, and exhausted rounds fail closed.
+The agent sends system instructions, time/timezone, chronological user/assistant messages and native tools derived from Tool.Schema. There are ten tool rounds plus one final model turn by default. Multiple calls execute sequentially after registry authorization and schema validation. Assistant calls and role=tool results retain matching provider IDs. Tool errors are data, not instructions. Empty content with calls is valid; empty turns are protocol errors. JSON and SSE fragmented calls are decoded in internal/ai.
 
-Registered tools are `schedule_query`, `schedule_create`, `schedule_update`, `schedule_cancel`, and `group_search`. Mutation tools server-resolve targets, snapshots, validation, and persistence through `schedule.Service`; they never write SQLite directly.
+ModeGroup registers schedule_query and group_search. ModeGroupWrite and ModeAdminPrivate add schedule_create, schedule_create_batch, schedule_update, schedule_update_batch and schedule_cancel. Mutations server-resolve snapshots and use schedule.Service transactions.
+
+AI_TOOL_MODE defaults to native (explicit legacy_json opt-in, no silent fallback). AI_CONTEXT_BYTES defaults to 131072 approximate bytes including schemas — not tokenizer tokens. Old input history is removed first; the current message, its immediate reply parent, and all tool exchanges are protected. Oversized protected context produces a controlled error. HTTP 429 and 5xx are retried; other 4xx are not. AI_STRICT_TOOLS and AI_DISABLE_PARALLEL_TOOLS are opt-in provider capabilities kept out of the agent loop; server validation and sequential execution remain mandatory.
+
+Workflow: Telegram → Conversation context → Agent → native AI call → authorized registry → domain service → tool result (ok/data/error via role=tool) → AI → final human text → Telegram.
+
+Mutation invocation keys combine stable Telegram chat/message identity and canonical tool arguments. agent_mutations stores results atomically with schedule changes, sources and changelog. Replay reads the result before target resolution (and after a crash with a changed snapshot). Best-effort batches have per-item transactional receipts. New Telegram messages use new scopes; different arguments are different invocations. This does not make Telegram delivery atomic with SQLite.
+
+Tool results are compact (IDs, titles, times, rrule, 5 warnings max, 20 search hits × 600 chars) — never full DB dumps. Strict JSON validation uses DisallowUnknownFields, single-value EOF, duplicate-key detection, RFC3339 and bounded recurrence/length checks.
 
 ## Event Safety
 

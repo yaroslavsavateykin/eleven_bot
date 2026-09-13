@@ -5,20 +5,16 @@ import (
 	"encoding/json"
 	"time"
 
+	"group411/internal/ai"
 	"group411/internal/conversation"
 )
 
 type Client interface {
-	Complete(context.Context, string, string) (string, error)
-}
-
-// StructuredClient requests a JSON object from transports that support the
-// OpenAI-compatible response_format parameter.
-type StructuredClient interface {
-	CompleteJSON(context.Context, string, string) (string, error)
+	Chat(context.Context, ai.ChatRequest) (ai.AssistantTurn, error)
 }
 
 type Conversation struct {
+	RunID    string
 	Messages []conversation.Message
 	Now      time.Time
 	Timezone string

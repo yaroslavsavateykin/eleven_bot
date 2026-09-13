@@ -1,0 +1,109 @@
+package ai
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestChatRetriesAndText(t *testing.T) {
+	for _, status := range []int{200, 429, 500, 400} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			attempts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				if attempts == 1 && status != 200 {
+					w.WriteHeader(status)
+					return
+				}
+				fmt.Fprint(w, `{"choices":[{"message":{"content":"Ответ"},"finish_reason":"stop"}]}`)
+			}))
+			defer server.Close()
+			turn, err := (Service{BaseURL: server.URL, Key: "test", Model: "fixture"}).Chat(context.Background(), ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "вопрос"}}})
+			if status == 400 {
+				if err == nil || attempts != 1 {
+					t.Fatal("4xx retried")
+				}
+				return
+			}
+			expected := 2
+			if status == 200 {
+				expected = 1
+			}
+			if err != nil || turn.Content != "Ответ" || attempts != expected {
+				t.Fatalf("%+v %v %d", turn, err, attempts)
+			}
+		})
+	}
+}
+func TestDecodeNativeSSE(t *testing.T) {
+	raw := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"schedule_query","arguments":"{\"query\":"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"экономика\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+`
+	turn, err := decodeAssistant([]byte(raw))
+	if err != nil || len(turn.ToolCalls) != 1 || turn.ToolCalls[0].ID != "call_a" || string(turn.ToolCalls[0].Arguments) != `{"query":"экономика"}` {
+		t.Fatalf("%+v %v", turn, err)
+	}
+}
+func TestEmptyAssistantRejected(t *testing.T) {
+	for _, raw := range []string{`{"choices":[{"message":{"content":null}}]}`, `{"choices":[]}`, `{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}`} {
+		if _, err := decodeAssistant([]byte(raw)); err == nil {
+			t.Fatal("accepted", raw)
+		}
+	}
+}
+
+func TestExplicitLegacyProtocol(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Error(err)
+		}
+		if p["tools"] != nil || p["response_format"] != nil {
+			t.Error("legacy sent native tools")
+		}
+		requests++
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"reply\":\"\",\"tool_calls\":[{\"name\":\"schedule_query\",\"arguments\":{}}]}"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	turn, err := (Service{BaseURL: server.URL, Key: "test", Model: "fixture", ToolMode: "legacy_json"}).Chat(context.Background(), ChatRequest{Round: 2})
+	if err != nil || len(turn.ToolCalls) != 1 || turn.ToolCalls[0].ID != "legacy_2_0" || requests != 1 {
+		t.Fatalf("%+v %v", turn, err)
+	}
+}
+
+func TestNativeNeverFallsBack(t *testing.T) {
+	for _, status := range []int{400, 500, 200} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var p map[string]any
+				json.NewDecoder(r.Body).Decode(&p)
+				if p["tools"] == nil {
+					t.Error("native fallback")
+				}
+				requests++
+				w.WriteHeader(status)
+				if status == 200 {
+					fmt.Fprint(w, `{"choices":[{"message":{}}]}`)
+				}
+			}))
+			defer server.Close()
+			_, err := (Service{BaseURL: server.URL, Key: "test", Model: "fixture"}).Chat(context.Background(), ChatRequest{Tools: []ToolDefinition{{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}}})
+			expected := 1
+			if status == 500 {
+				expected = 3
+			}
+			if err == nil || requests != expected {
+				t.Fatalf("%v %d", err, requests)
+			}
+		})
+	}
+}

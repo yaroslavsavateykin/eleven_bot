@@ -281,6 +281,18 @@ func (s Service) ApplyAll(ctx context.Context, proposals []Proposal, chatID int6
 		return nil, err
 	}
 	defer tx.Rollback()
+	if key := invocation(ctx); key != "" {
+		var raw string
+		err := tx.QueryRowContext(ctx, "SELECT result_json FROM agent_mutations WHERE group_id=? AND invocation_key=?", s.GroupID, key).Scan(&raw)
+		if err == nil {
+			var events []Event
+			err = json.Unmarshal([]byte(raw), &events)
+			return events, err
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
 	events := make([]Event, 0, len(proposals))
 	for i, p := range proposals {
 		e, err := s.applyTx(ctx, tx, p, chatID, messageID, i)
@@ -288,6 +300,15 @@ func (s Service) ApplyAll(ctx context.Context, proposals []Proposal, chatID int6
 			return nil, err
 		}
 		events = append(events, e)
+	}
+	if key := invocation(ctx); key != "" {
+		raw, err := json.Marshal(events)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO agent_mutations(group_id,invocation_key,result_json,created_at) VALUES(?,?,?,?)", s.GroupID, key, string(raw), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -299,7 +320,17 @@ func (s Service) ApplyAll(ctx context.Context, proposals []Proposal, chatID int6
 // ApplyAll's atomic semantics; an admin paste may contain unrelated bad facts.
 func (s Service) ApplyImport(ctx context.Context, proposals []Proposal, chatID int64, messageID int) (ImportResult, error) {
 	result := ImportResult{}
-	for _, proposal := range proposals {
+	for index, proposal := range proposals {
+		itemCtx := ctx
+		if key := invocation(ctx); key != "" {
+			itemCtx = WithInvocation(ctx, fmt.Sprintf("%s/item/%d", key, index))
+			if events, found, err := s.InvocationResult(itemCtx); err != nil {
+				return result, err
+			} else if found {
+				result.Events = append(result.Events, events...)
+				continue
+			}
+		}
 		prepared, err := s.prepareProposal(proposal)
 		if err != nil {
 			result.Skipped = append(result.Skipped, SkippedOperation{Proposal: proposal, Reason: err.Error()})
@@ -325,7 +356,7 @@ func (s Service) ApplyImport(ctx context.Context, proposals []Proposal, chatID i
 		}
 		// A single-operation transaction isolates a late stale/duplicate race
 		// without rolling back unrelated, already validated admin facts.
-		events, err := s.ApplyAll(ctx, []Proposal{prepared}, chatID, messageID)
+		events, err := s.ApplyAll(itemCtx, []Proposal{prepared}, chatID, messageID)
 		if err != nil {
 			if infrastructureError(err) {
 				return result, err
@@ -400,6 +431,9 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 		return e, err
 	}
 	sourceID := fmt.Sprintf("%d:%d:%d:%s", chatID, messageID, operationIndex, raw)
+	if key := invocation(ctx); key != "" {
+		sourceID = fmt.Sprintf("agent:%s:%d", key, operationIndex)
+	}
 	var existingID int64
 	err = tx.QueryRowContext(ctx, "SELECT e.id FROM event_sources es JOIN events e ON e.id=es.event_id WHERE es.source_type='telegram' AND es.external_id=? AND e.group_id=?", sourceID, s.GroupID).Scan(&existingID)
 	if err == nil {

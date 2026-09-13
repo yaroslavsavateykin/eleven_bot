@@ -150,6 +150,10 @@ GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
 | `DATABASE_PATH` | Путь SQLite. В Docker используется `/data/app.db`. |
 | `AI_BASE_URL`, `AI_API_KEY`, `AI_TEXT_MODEL` | Параметры OpenAI-compatible endpoint. |
 | `AI_STT_MODEL` | Необязательная модель распознавания голосовых сообщений. Если пусто, бот попросит отправить текстом. |
+| `AI_TOOL_MODE` | `native` (по умолчанию) — native function calling. `legacy_json` — JSON-envelope для endpoint без поддержки native tools. |
+| `AI_CONTEXT_BYTES` | Приблизительный byte budget для всего запроса, включая schemas (по умолчанию 131072). |
+| `AI_STRICT_TOOLS` | `true` — добавляет `strict: true` и раскрывает required-поля для OpenAI strict mode (по умолчанию `false`). |
+| `AI_DISABLE_PARALLEL_TOOLS` | `true` — отключает `parallel_tool_calls` для endpoint, где это поддерживается (по умолчанию `false`). |
 
 ## Запуск через Docker Compose
 
@@ -227,19 +231,40 @@ volumes:
 ## Архитектура
 
 ```text
-Telegram -> Conversation Service -> Agent -> safe tools -> domain services -> SQLite
+Telegram -> Conversation context -> Agent -> AI native tool call
+  -> Tool Registry -> Domain service -> tool result -> AI -> final reply -> Telegram
 ```
 
 - `internal/conversation` хранит входящие и bot-сообщения, reply relation и bounded context.
 - `internal/telegram` занимается авторизацией, Telegram metadata, ingestion, trigger policy и доставкой ответа. Он не понимает смысл текста.
 - `internal/conversation` хранит message graph, строит bounded reply context и выполняет group FTS search.
-- `internal/agent` запускает ограниченный tool-calling loop с `schedule_query`, `schedule_create`, `schedule_update`, `schedule_cancel`, `group_search`.
+- `internal/agent` запускает native tool-calling loop (10 rounds + финальный turn) с `schedule_query`, `group_search` в группе и дополнительно `schedule_create`, `schedule_create_batch`, `schedule_update`, `schedule_update_batch`, `schedule_cancel` в write/admin режимах.
 - `internal/ai` является OpenAI-compatible transport для текста, vision и speech.
 - `internal/schedule` нормализует typed recurrence, компилирует её в RRULE, проверяет целостность и применяет изменения транзакционно.
 - `internal/db/migrations` содержит единственный источник миграций.
 - `prompts` содержит встраиваемые промпты.
 
 Подробнее: [`docs/architecture.md`](docs/architecture.md). Правила для AI-агентов: [`AI_AGENTS.md`](AI_AGENTS.md).
+
+### Native AI orchestration
+
+Endpoint `/chat/completions` должен поддерживать native function tools и `tool_choice=auto`.
+`AI_TOOL_MODE=native` по умолчанию, `legacy_json` — явный opt-in для endpoint без native tools; silent fallback запрещён.
+До 10 tool rounds + финальный turn, несколько tool_calls в одном turn выполняются последовательно (max 100/round).
+Schemas берутся из `Tool.Schema()` (расширяется в `schema.go` для shared recurrence/limits), аргументы
+проверяются strict JSON (DisallowUnknownFields, EOF, duplicate keys, RFC3339) + typed decoder.
+Tool results — компактные `role=tool` с исходным provider ID и envelope `ok/data/error`.
+
+`AI_CONTEXT_BYTES=131072` — byte budget включая schemas, не tokenizer tokens. Последние два входных
+сообщения и все tool exchanges защищены от удаления; старая история удаляется первой.
+При превышении защищённого контекста — явное сообщение о лимите, без silent truncation. Conversation graph
+имеет собственный предварительный лимит 3000 символов.
+
+Mutation replay scoped по Telegram chat/message + canonical arguments. Результат в `agent_mutations`
+атомарно с mutation; batch хранит receipts по элементам. Новый Telegram message — новый scope.
+`AI_STRICT_TOOLS`/`AI_DISABLE_PARALLEL_TOOLS` — opt-in provider capabilities вне agent loop.
+HTTP 429/5xx retry (до 3), остальные 4xx — нет. `Complete` оставлен для `/roast`; legacy adapter
+не смешивает tool data с user prompt (tool → assistant content).
 
 ## Проверки перед публикацией
 

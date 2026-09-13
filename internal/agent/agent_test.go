@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"group411/internal/ai"
 	"group411/internal/conversation"
 	"group411/internal/db"
 	"group411/internal/schedule"
@@ -16,10 +17,21 @@ import (
 
 type fakeClient struct{ answers []string }
 
-func (f *fakeClient) Complete(context.Context, string, string) (string, error) {
+func (f *fakeClient) Chat(context.Context, ai.ChatRequest) (ai.AssistantTurn, error) {
 	answer := f.answers[0]
 	f.answers = f.answers[1:]
-	return answer, nil
+	var fixture struct {
+		Reply     string     `json:"reply"`
+		ToolCalls []ToolCall `json:"tool_calls"`
+	}
+	if err := json.Unmarshal([]byte(answer), &fixture); err != nil {
+		return ai.AssistantTurn{}, err
+	}
+	turn := ai.AssistantTurn{Content: fixture.Reply}
+	for i, c := range fixture.ToolCalls {
+		turn.ToolCalls = append(turn.ToolCalls, ai.ToolCall{ID: fmt.Sprintf("call_%d", i), Name: c.Name, Arguments: c.Arguments})
+	}
+	return turn, nil
 }
 
 type fakeTool struct {
@@ -42,13 +54,6 @@ func TestAgentAnswersWithoutTool(t *testing.T) {
 	result, err := (Agent{Client: &fakeClient{answers: []string{`{"reply":"Объяснение","tool_calls":[]}`}}}).Run(context.Background(), testInput())
 	if err != nil || result.Reply != "Объяснение" {
 		t.Fatalf("result=%#v err=%v", result, err)
-	}
-}
-
-func TestToolDefinitionsAreCompact(t *testing.T) {
-	definition := toolDefinition(&fakeTool{name: "schedule_update_batch"})
-	if len(definition) > 250 || !strings.Contains(definition, `"updates"`) {
-		t.Fatalf("definition=%q", definition)
 	}
 }
 
@@ -195,7 +200,7 @@ func TestBirthdayBatchSuppliesMissingEndAndTimezone(t *testing.T) {
 	}
 }
 
-func TestBirthdayBatchAcceptsLooseAliasesAndDate(t *testing.T) {
+func TestBirthdayBatchRejectsLooseAliasesAndDate(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-birthday-loose.db"))
 	if err != nil {
@@ -206,16 +211,12 @@ func TestBirthdayBatchAcceptsLooseAliasesAndDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := ScheduleMutationTool{Schedule: schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}, Operation: "create_batch"}
-	if _, err = tool.Execute(ctx, json.RawMessage(`{"birthdays":[{"name":"День рождения: Арсений Егоров","date":"18 мая","comment":"лишнее поле"}]}`)); err != nil {
-		t.Fatal(err)
-	}
-	var title string
-	if err = database.QueryRow("SELECT title FROM events WHERE kind='birthday'").Scan(&title); err != nil || title != "День рождения: Арсений Егоров" {
-		t.Fatalf("title=%q err=%v", title, err)
+	if _, err = tool.Execute(ctx, json.RawMessage(`{"birthdays":[{"name":"День рождения: Арсений Егоров","date":"18 мая","comment":"лишнее поле"}]}`)); err == nil {
+		t.Fatal("accepted legacy aliases")
 	}
 }
 
-func TestBirthdayBatchAcceptsStringWrappedArray(t *testing.T) {
+func TestBirthdayBatchRejectsStringWrappedArray(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-birthday-wrapped.db"))
 	if err != nil {
@@ -227,8 +228,8 @@ func TestBirthdayBatchAcceptsStringWrappedArray(t *testing.T) {
 	}
 	tool := ScheduleMutationTool{Schedule: schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}, Operation: "create_batch"}
 	raw := json.RawMessage(`"[{\"name\":\"День рождения: Полякова Настя\",\"date\":\"3 мая\"}]"`)
-	if _, err = tool.Execute(ctx, raw); err != nil {
-		t.Fatal(err)
+	if _, err = tool.Execute(ctx, raw); err == nil {
+		t.Fatal("accepted string wrapped array")
 	}
 }
 

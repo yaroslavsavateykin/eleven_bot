@@ -1,15 +1,12 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"group411/internal/conversation"
 	"group411/internal/schedule"
@@ -25,6 +22,9 @@ func (t ScheduleQueryTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"from":{"type":"string","description":"RFC3339 timestamp"},"to":{"type":"string","description":"RFC3339 timestamp, exclusive"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}`)
 }
 func (t ScheduleQueryTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	if err := validateArguments(t.Schema(), raw); err != nil {
+		return ToolResult{}, err
+	}
 	var args struct {
 		From, To, Query string
 		Limit           int
@@ -211,7 +211,7 @@ func (t ScheduleMutationTool) Description() string {
 	}
 	return "Safely " + t.Operation + " a schedule event through server-side validation."
 }
-func (t ScheduleMutationTool) Schema() json.RawMessage {
+func (t ScheduleMutationTool) schemaBase() json.RawMessage {
 	if t.Operation == "cancel" {
 		return json.RawMessage(`{"type":"object","required":["target_id"],"properties":{"target_id":{"type":"integer"}},"additionalProperties":false}`)
 	}
@@ -226,7 +226,28 @@ func (t ScheduleMutationTool) Schema() json.RawMessage {
 	}
 	return json.RawMessage(`{"type":"object","required":["event"],"properties":{"target_id":{"type":"integer"},"event":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":["string","null"],"description":"RFC3339"},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
 }
-func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) (result ToolResult, err error) {
+	defer func() {
+		if err != nil {
+			if _, ok := err.(*ArgumentError); !ok {
+				safe := schedule.SafeError(err.Error())
+				if safe != schedule.SafeError("") {
+					err = &ArgumentError{safe}
+				}
+			}
+		}
+	}()
+	if err := validateArguments(t.Schema(), raw); err != nil {
+		return ToolResult{}, err
+	}
+	if events, found, err := t.Schedule.InvocationResult(ctx); err != nil {
+		return ToolResult{}, err
+	} else if found {
+		if len(events) != 1 {
+			return ToolResult{}, fmt.Errorf("invalid persisted mutation result")
+		}
+		return eventResult(events[0])
+	}
 	if t.Operation == "cancel" {
 		var args struct {
 			TargetID int64 `json:"target_id"`
@@ -264,15 +285,17 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 }
 
 func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	entries, err := batchEntries(raw)
-	if err != nil {
-		return ToolResult{}, err
+	var args struct {
+		Events []eventInput `json:"events"`
 	}
+	if err := decode(raw, &args); err != nil || len(args.Events) == 0 || len(args.Events) > 100 {
+		return ToolResult{}, fmt.Errorf("invalid batch events")
+	}
+	entries := args.Events
 	proposals := make([]schedule.Proposal, 0, len(entries))
-	for _, entry := range entries {
-		input, err := decodeFlexibleEvent(entry, true, t.Schedule.TZ)
-		if err != nil {
-			return ToolResult{}, err
+	for _, input := range entries {
+		if input.Kind == "" || strings.TrimSpace(input.Title) == "" || input.StartsAt.IsZero() {
+			return ToolResult{}, fmt.Errorf("kind, title and starts_at are required")
 		}
 		if input.Kind == "birthday" {
 			input = t.normalizeBirthday(input)
@@ -288,117 +311,7 @@ func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessa
 	if err != nil {
 		return ToolResult{}, err
 	}
-	data, err := json.Marshal(struct {
-		Created []schedule.Event            `json:"created"`
-		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
-	}{Created: result.Events, Skipped: result.Skipped})
-	return ToolResult{Content: string(data)}, err
-}
-
-func batchEntries(raw json.RawMessage) ([]json.RawMessage, error) {
-	data := bytes.TrimSpace(raw)
-	for len(data) > 0 && data[0] == '"' {
-		var text string
-		if err := json.Unmarshal(data, &text); err != nil {
-			return nil, fmt.Errorf("invalid batch arguments")
-		}
-		data = []byte(text)
-	}
-	var entries []json.RawMessage
-	if json.Unmarshal(data, &entries) == nil && len(entries) > 0 {
-		return entries, nil
-	}
-	var container map[string]json.RawMessage
-	if err := json.Unmarshal(data, &container); err != nil {
-		return nil, fmt.Errorf("invalid batch arguments")
-	}
-	for _, key := range []string{"events", "birthdays", "items", "data", "results"} {
-		if value := container[key]; len(value) > 0 {
-			if nested, err := batchEntries(value); err == nil && len(nested) > 0 {
-				return nested, nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("batch events are required")
-}
-
-// decodeFlexibleEvent accepts common model aliases while the domain layer still
-// validates the final event before persistence.
-func decodeFlexibleEvent(raw json.RawMessage, birthdayDefault bool, loc *time.Location) (eventInput, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return eventInput{}, fmt.Errorf("event must be an object")
-	}
-	alias := func(target, source string) {
-		if len(fields[target]) == 0 && len(fields[source]) > 0 {
-			fields[target] = fields[source]
-		}
-	}
-	alias("title", "name")
-	alias("title", "text")
-	alias("starts_at", "date")
-	alias("starts_at", "start")
-	alias("ends_at", "end")
-	if birthdayDefault && len(fields["kind"]) == 0 {
-		fields["kind"] = json.RawMessage(`"birthday"`)
-	}
-	if date, ok := fields["starts_at"]; ok {
-		var value string
-		if json.Unmarshal(date, &value) == nil {
-			parsed, err := flexibleTime(value, loc)
-			if err != nil {
-				return eventInput{}, fmt.Errorf("invalid event date %q", value)
-			}
-			fields["starts_at"], _ = json.Marshal(parsed.Format(time.RFC3339))
-		}
-	}
-	data, _ := json.Marshal(fields)
-	var input eventInput
-	if err := decode(data, &input); err != nil {
-		return eventInput{}, err
-	}
-	if strings.TrimSpace(input.Title) == "" || input.StartsAt.IsZero() {
-		return eventInput{}, fmt.Errorf("event title and date are required")
-	}
-	return input, nil
-}
-
-func flexibleTime(value string, loc *time.Location) (time.Time, error) {
-	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
-		return parsed, nil
-	}
-	if loc == nil {
-		loc = time.UTC
-	}
-	for _, layout := range []string{"2006-01-02", "02.01.2006", "2.1.2006"} {
-		if parsed, err := time.ParseInLocation(layout, value, loc); err == nil {
-			return parsed, nil
-		}
-	}
-	parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-	if len(parts) == 2 || len(parts) == 3 {
-		months := map[string]time.Month{"января": time.January, "февраля": time.February, "марта": time.March, "апреля": time.April, "мая": time.May, "июня": time.June, "июля": time.July, "августа": time.August, "сентября": time.September, "октября": time.October, "ноября": time.November, "декабря": time.December}
-		month, ok := months[parts[1]]
-		if !ok {
-			return time.Time{}, fmt.Errorf("unsupported date")
-		}
-		day, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return time.Time{}, fmt.Errorf("unsupported date")
-		}
-		year := time.Now().In(loc).Year()
-		if len(parts) == 3 {
-			year, err = strconv.Atoi(parts[2])
-			if err != nil {
-				return time.Time{}, fmt.Errorf("unsupported date")
-			}
-		}
-		parsed := time.Date(year, month, day, 0, 0, 0, 0, loc)
-		if parsed.Month() == month && parsed.Day() == day {
-			return parsed, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("unsupported date")
+	return batchResult("created", result)
 }
 
 // Birthday lists commonly omit the birth year and end of the all-day interval.
@@ -441,14 +354,24 @@ func (t ScheduleMutationTool) update(ctx context.Context, raw json.RawMessage) (
 type updateInput struct {
 	TargetID int64 `json:"target_id"`
 	Changes  struct {
-		Title       *string    `json:"title"`
-		StartsAt    *time.Time `json:"starts_at"`
-		EndsAt      *time.Time `json:"ends_at"`
-		Location    **string   `json:"location"`
-		Description **string   `json:"description"`
-		AllDay      *bool      `json:"all_day"`
-		Tags        *[]string  `json:"tags"`
+		Title       *string        `json:"title"`
+		StartsAt    *time.Time     `json:"starts_at"`
+		EndsAt      *time.Time     `json:"ends_at"`
+		Location    nullableString `json:"location"`
+		Description nullableString `json:"description"`
+		AllDay      *bool          `json:"all_day"`
+		Tags        *[]string      `json:"tags"`
 	} `json:"changes"`
+}
+
+type nullableString struct {
+	Set   bool
+	Value *string
+}
+
+func (s *nullableString) UnmarshalJSON(raw []byte) error {
+	s.Set = true
+	return json.Unmarshal(raw, &s.Value)
 }
 
 func (t ScheduleMutationTool) updateProposal(ctx context.Context, args updateInput) (schedule.Proposal, error) {
@@ -466,11 +389,11 @@ func (t ScheduleMutationTool) updateProposal(ctx context.Context, args updateInp
 	if args.Changes.EndsAt != nil {
 		updated.EndsAt = args.Changes.EndsAt
 	}
-	if args.Changes.Location != nil {
-		updated.Location = *args.Changes.Location
+	if args.Changes.Location.Set {
+		updated.Location = args.Changes.Location.Value
 	}
-	if args.Changes.Description != nil {
-		updated.Description = *args.Changes.Description
+	if args.Changes.Description.Set {
+		updated.Description = args.Changes.Description.Value
 	}
 	if args.Changes.AllDay != nil {
 		updated.AllDay = *args.Changes.AllDay
@@ -489,7 +412,14 @@ func (t ScheduleMutationTool) updateBatch(ctx context.Context, raw json.RawMessa
 		return ToolResult{}, fmt.Errorf("invalid batch updates")
 	}
 	proposals := make([]schedule.Proposal, 0, len(args.Updates))
-	for _, update := range args.Updates {
+	for index, update := range args.Updates {
+		if events, found, err := t.Schedule.InvocationResult(schedule.ItemInvocation(ctx, index)); err != nil {
+			return ToolResult{}, err
+		} else if found && len(events) == 1 {
+			// ApplyImport checks this item's receipt before validating its snapshot.
+			proposals = append(proposals, schedule.Proposal{Operation: "update", Event: events[0]})
+			continue
+		}
 		proposal, err := t.updateProposal(ctx, update)
 		if err != nil {
 			return ToolResult{}, err
@@ -500,11 +430,7 @@ func (t ScheduleMutationTool) updateBatch(ctx context.Context, raw json.RawMessa
 	if err != nil {
 		return ToolResult{}, err
 	}
-	data, err := json.Marshal(struct {
-		Updated []schedule.Event            `json:"updated"`
-		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
-	}{Updated: result.Events, Skipped: result.Skipped})
-	return ToolResult{Content: string(data)}, err
+	return batchResult("updated", result)
 }
 func (t ScheduleMutationTool) apply(ctx context.Context, current schedule.Event) (ToolResult, error) {
 	if current.ID == 0 || current.Status != "active" {
@@ -517,8 +443,7 @@ func (t ScheduleMutationTool) applyProposal(ctx context.Context, proposal schedu
 	if err != nil {
 		return ToolResult{}, err
 	}
-	data, err := json.Marshal(event)
-	return ToolResult{Content: string(data)}, err
+	return eventResult(event)
 }
 
 type eventInput struct {
@@ -568,6 +493,9 @@ func (t GroupSearchTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}`)
 }
 func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	if err := validateArguments(t.Schema(), raw); err != nil {
+		return ToolResult{}, err
+	}
 	var args struct {
 		Query, From, To string
 		Limit           int
@@ -594,14 +522,20 @@ func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (Tool
 	if err != nil {
 		return ToolResult{}, err
 	}
+	for i := range results {
+		if len([]rune(results[i].Text)) > 600 {
+			results[i].Text = string([]rune(results[i].Text)[:600]) + "…"
+		}
+	}
 	data, err := json.Marshal(results)
 	return ToolResult{Content: string(data)}, err
 }
 
 func decode(raw json.RawMessage, target any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil || dec.Decode(new(any)) != io.EOF {
-		return fmt.Errorf("invalid tool arguments")
+		return &ArgumentError{"Arguments must contain one object with only schema-defined fields."}
 	}
 	return nil
 }

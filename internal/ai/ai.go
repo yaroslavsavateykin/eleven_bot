@@ -16,6 +16,9 @@ import (
 )
 
 type Service struct {
+	ToolMode                                   string
+	DisableParallelTools                       bool
+	StrictTools                                bool
 	BaseURL, Key, Model, VisionModel, STTModel string
 	Client                                     *http.Client
 }
@@ -173,16 +176,10 @@ func decodeChatContent(data []byte) (string, error) {
 }
 
 func (s Service) Complete(ctx context.Context, system, prompt string) (string, error) {
-	return s.complete(ctx, system, prompt, 6000, 300, false)
+	return s.complete(ctx, system, prompt, 6000, 300)
 }
 
-// CompleteJSON requests an OpenAI-compatible JSON object for tool orchestration.
-func (s Service) CompleteJSON(ctx context.Context, system, prompt string) (string, error) {
-	// A batch tool call can legitimately contain dozens of compact event objects.
-	// Keep the response bounded but high enough to avoid truncating valid JSON.
-	return s.complete(ctx, system, prompt, 6000, 4096, true)
-}
-func (s Service) complete(ctx context.Context, system, prompt string, maxPrompt, tokens int, structured bool) (string, error) {
+func (s Service) complete(ctx context.Context, system, prompt string, maxPrompt, tokens int) (string, error) {
 	if s.Key == "" || s.Model == "" {
 		return "", fmt.Errorf("AI is not configured")
 	}
@@ -191,10 +188,6 @@ func (s Service) complete(ctx context.Context, system, prompt string, maxPrompt,
 	}
 	base := s.baseURL()
 	payload := map[string]any{"model": s.Model, "messages": []message{{Role: "system", Content: system}, {Role: "user", Content: prompt}}, "temperature": 0.4, "max_tokens": tokens}
-	if structured {
-		payload["response_format"] = map[string]string{"type": "json_object"}
-		payload["temperature"] = 0
-	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
