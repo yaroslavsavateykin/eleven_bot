@@ -208,6 +208,23 @@ func TestBirthdayBatchAcceptsLooseAliasesAndDate(t *testing.T) {
 	}
 }
 
+func TestBirthdayBatchAcceptsStringWrappedArray(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-birthday-wrapped.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	tool := ScheduleMutationTool{Schedule: schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}, Operation: "create_batch"}
+	raw := json.RawMessage(`"[{\"name\":\"День рождения: Полякова Настя\",\"date\":\"3 мая\"}]"`)
+	if _, err = tool.Execute(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestScheduleQueryMatchesRussianInflections(t *testing.T) {
 	if !matchesQuery("Практикум по радиохимии", "радиохимия") {
 		t.Fatal("search did not match an inflectional form")

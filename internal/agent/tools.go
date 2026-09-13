@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -263,20 +264,9 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 }
 
 func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	var container map[string]json.RawMessage
-	if err := decode(raw, &container); err != nil {
-		return ToolResult{}, fmt.Errorf("invalid batch events: %w", err)
-	}
-	items := container["events"]
-	if len(items) == 0 {
-		items = container["birthdays"]
-	}
-	if len(items) == 0 {
-		items = container["items"]
-	}
-	var entries []json.RawMessage
-	if err := json.Unmarshal(items, &entries); err != nil || len(entries) == 0 {
-		return ToolResult{}, fmt.Errorf("batch events are required")
+	entries, err := batchEntries(raw)
+	if err != nil {
+		return ToolResult{}, err
 	}
 	proposals := make([]schedule.Proposal, 0, len(entries))
 	for _, entry := range entries {
@@ -303,6 +293,33 @@ func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessa
 		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
 	}{Created: result.Events, Skipped: result.Skipped})
 	return ToolResult{Content: string(data)}, err
+}
+
+func batchEntries(raw json.RawMessage) ([]json.RawMessage, error) {
+	data := bytes.TrimSpace(raw)
+	for len(data) > 0 && data[0] == '"' {
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return nil, fmt.Errorf("invalid batch arguments")
+		}
+		data = []byte(text)
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(data, &entries) == nil && len(entries) > 0 {
+		return entries, nil
+	}
+	var container map[string]json.RawMessage
+	if err := json.Unmarshal(data, &container); err != nil {
+		return nil, fmt.Errorf("invalid batch arguments")
+	}
+	for _, key := range []string{"events", "birthdays", "items", "data", "results"} {
+		if value := container[key]; len(value) > 0 {
+			if nested, err := batchEntries(value); err == nil && len(nested) > 0 {
+				return nested, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("batch events are required")
 }
 
 // decodeFlexibleEvent accepts common model aliases while the domain layer still
