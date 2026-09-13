@@ -138,10 +138,8 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			var args any
 			if !ok {
 				code, message = "unknown_tool", "Инструмент недоступен в этом диалоге."
-			} else if err := validateArguments(tool.Schema(), call.Arguments); err != nil {
-				code, message = "invalid_arguments", err.Error()
 			} else if json.Unmarshal(call.Arguments, &args) != nil || args == nil {
-				code, message = "invalid_arguments", "Аргументы должны соответствовать схеме инструмента."
+				code, message = "invalid_arguments", "Аргументы должны быть валидным JSON."
 			} else {
 				canonical, _ := json.Marshal(args)
 				key := fmt.Sprintf("%x", sha256.Sum256(append([]byte(call.Name+"\x00"), canonical...)))

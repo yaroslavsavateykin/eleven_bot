@@ -136,8 +136,8 @@ func TestNativeScheduleAcceptance(t *testing.T) {
 				switch {
 				case scenario == "birthdays" && round == 0:
 					call("schedule_create_batch", `{"events":[{"kind":"birthday","title":"День рождения: Аня","starts_at":"2005-05-03T00:00:00Z"},{"kind":"birthday","title":"День рождения: Борис","starts_at":"2006-06-04T00:00:00Z"}]}`)
-				case scenario == "repair" && round == 0:
-					call("schedule_query", `{"unexpected":true}`)
+			case scenario == "repair" && round == 0:
+				call("schedule_query", `{"query":123}`)
 				case scenario == "repair" && round == 1:
 					call("schedule_query", `{"query":"экономике"}`)
 				case scenario == "create" && round == 0:

@@ -22,9 +22,6 @@ func (t ScheduleQueryTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"from":{"type":"string","description":"RFC3339 timestamp"},"to":{"type":"string","description":"RFC3339 timestamp, exclusive"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}`)
 }
 func (t ScheduleQueryTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	if err := validateArguments(t.Schema(), raw); err != nil {
-		return ToolResult{}, err
-	}
 	var args struct {
 		From, To, Query string
 		Limit           int
@@ -238,9 +235,6 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 		// The typed validation errors above remain classified as invalid arguments.
 		err = &ExecutionError{schedule.SafeError(err.Error())}
 	}()
-	if err := validateArguments(t.Schema(), raw); err != nil {
-		return ToolResult{}, err
-	}
 	if events, found, err := t.Schedule.InvocationResult(ctx); err != nil {
 		return ToolResult{}, err
 	} else if found {
@@ -494,9 +488,6 @@ func (t GroupSearchTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}`)
 }
 func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	if err := validateArguments(t.Schema(), raw); err != nil {
-		return ToolResult{}, err
-	}
 	var args struct {
 		Query, From, To string
 		Limit           int
@@ -534,9 +525,8 @@ func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (Tool
 
 func decode(raw json.RawMessage, target any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil || dec.Decode(new(any)) != io.EOF {
-		return &ArgumentError{"Arguments must contain one object with only schema-defined fields."}
+		return &ArgumentError{"Аргументы должны быть одним валидным JSON-объектом."}
 	}
 	return nil
 }
