@@ -1,12 +1,20 @@
 services:
   app:
-    build: .
+    image: ${ELEVEN_BOT_IMAGE:-ghcr.io/yaroslavsavateykin/eleven_bot:latest}
+    pull_policy: always
     user: "1000:1000"
     env_file: .env
     volumes:
       - ./data:/data
     ports:
       - "6767:6767"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     healthcheck:
       test: ["CMD", "/app", "-healthcheck"]
       interval: 30s
