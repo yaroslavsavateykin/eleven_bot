@@ -203,7 +203,30 @@ func (s Service) Recent(ctx context.Context, chatID int64, limit int) ([]Message
 	for i := range reversed {
 		messages[len(reversed)-1-i] = reversed[i]
 	}
-	return messages, nil
+	return boundRecent(messages, s.MaxChars), nil
+}
+
+func boundRecent(messages []Message, budget int) []Message {
+	if budget <= 0 {
+		budget = 3000
+	}
+	used := 0
+	kept := make([]Message, 0, len(messages))
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if len(kept) == 0 && len(message.Text) > budget {
+			message.Text = truncateBytes(message.Text, budget)
+		}
+		if len(message.Text)+used > budget {
+			break
+		}
+		kept = append(kept, message)
+		used += len(message.Text)
+	}
+	for left, right := 0, len(kept)-1; left < right; left, right = left+1, right-1 {
+		kept[left], kept[right] = kept[right], kept[left]
+	}
+	return kept
 }
 
 func (s Service) BuildReplyChain(ctx context.Context, messageID int64) ([]Message, error) {

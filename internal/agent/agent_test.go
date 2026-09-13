@@ -44,6 +44,13 @@ func TestAgentAnswersWithoutTool(t *testing.T) {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
+
+func TestToolDefinitionsAreCompact(t *testing.T) {
+	definition := toolDefinition(&fakeTool{name: "schedule_update_batch"})
+	if len(definition) > 250 || !strings.Contains(definition, `"updates"`) {
+		t.Fatalf("definition=%q", definition)
+	}
+}
 func TestAgentExecutesOnlyRegisteredTool(t *testing.T) {
 	tool := &fakeTool{name: "schedule_query"}
 	client := &fakeClient{answers: []string{`{"reply":"","tool_calls":[{"name":"schedule_query","arguments":{}}]}`, `{"reply":"Завтра пара.","tool_calls":[]}`}}

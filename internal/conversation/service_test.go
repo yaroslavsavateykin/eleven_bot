@@ -112,6 +112,14 @@ func TestRecentReturnsLastTenMessagesChronologically(t *testing.T) {
 	}
 }
 
+func TestRecentBoundsMessageTextBudget(t *testing.T) {
+	messages := []Message{{Text: "one"}, {Text: "two"}, {Text: "three"}}
+	got := boundRecent(messages, 8)
+	if len(got) != 2 || got[0].Text != "two" || got[1].Text != "three" {
+		t.Fatalf("messages=%#v", got)
+	}
+}
+
 func TestReplyChainHasDepthAndCycleProtection(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "graph.db"))

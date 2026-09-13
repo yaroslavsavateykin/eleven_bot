@@ -34,7 +34,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 	var definitions []string
 	for _, tool := range available {
 		tools[tool.Name()] = tool
-		definitions = append(definitions, tool.Name()+": "+tool.Description()+" input="+string(tool.Schema()))
+		definitions = append(definitions, toolDefinition(tool))
 	}
 	prompt := renderConversation(input, definitions)
 	system := prompts.AgentSystem
@@ -117,6 +117,22 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		prompt = appendToolResult(prompt, call.Name, result.Content)
 	}
 	return Result{Reply: "Не удалось завершить проверку данных за один запрос. Уточните, пожалуйста, название или дату нужного занятия."}, nil
+}
+
+// Full JSON Schemas for batch tools consume most of the gateway's small input
+// budget. The server remains the authoritative strict validator; the model only
+// needs a compact, valid shape for each call.
+func toolDefinition(tool Tool) string {
+	example := map[string]string{
+		"schedule_query":        `{"query":"название предмета"}`,
+		"group_search":          `{"query":"фраза"}`,
+		"schedule_create":       `{"event":{"kind":"event","title":"...","starts_at":"RFC3339","ends_at":"RFC3339","timezone":"Europe/Moscow"}}`,
+		"schedule_create_batch": `{"events":[{"kind":"birthday","title":"День рождения: Имя","starts_at":"RFC3339","ends_at":"RFC3339","timezone":"Europe/Moscow","all_day":true}]}`,
+		"schedule_update":       `{"target_id":123,"changes":{"title":"..."}}`,
+		"schedule_update_batch": `{"updates":[{"target_id":123,"changes":{"title":"..."}}]}`,
+		"schedule_cancel":       `{"target_id":123}`,
+	}[tool.Name()]
+	return tool.Name() + ": " + tool.Description() + " input=" + example
 }
 
 func toolProgress(name string) string {
