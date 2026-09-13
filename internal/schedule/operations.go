@@ -392,6 +392,12 @@ func (s Service) prepareProposal(p Proposal) (Proposal, error) {
 	if err != nil {
 		return p, err
 	}
+	if err = s.resolveCategory(&e); err != nil {
+		return p, err
+	}
+	if e.Timezone == "" {
+		e.Timezone = s.defaultTimezone()
+	}
 	if e.AllDay {
 		e, err = NormalizeAllDay(e, s.TZ)
 		if err != nil {
@@ -403,6 +409,25 @@ func (s Service) prepareProposal(p Proposal) (Proposal, error) {
 	}
 	p.Event = e
 	return p, nil
+}
+
+// resolveCategory fills an omitted category from kind/title so the persisted
+// event always satisfies the category CHECK constraint. Domain validation in
+// Validate already rejects unsupported explicit categories.
+func (s Service) resolveCategory(e *Event) error {
+	resolved, err := category.Resolve(e.Category, e.Kind, e.Title)
+	if err != nil {
+		return err
+	}
+	e.Category = resolved
+	return nil
+}
+
+func (s Service) defaultTimezone() string {
+	if s.TZ != nil {
+		return s.TZ.String()
+	}
+	return "UTC"
 }
 
 func infrastructureError(err error) bool {
@@ -417,6 +442,12 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 		e, err = s.normalizeRecurrence(e)
 		if err != nil {
 			return e, err
+		}
+		if err = s.resolveCategory(&e); err != nil {
+			return e, err
+		}
+		if e.Timezone == "" {
+			e.Timezone = s.defaultTimezone()
 		}
 		p.Event = e
 	}

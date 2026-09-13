@@ -87,7 +87,7 @@ func TestNativeProviderContract(t *testing.T) {
 }
 
 func TestNativeScheduleAcceptance(t *testing.T) {
-	for _, scenario := range []string{"query", "update", "birthdays", "repair"} {
+	for _, scenario := range []string{"query", "update", "create", "birthdays", "repair"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			database, err := db.Open(ctx, filepath.Join(t.TempDir(), "schedule.db"))
@@ -140,7 +140,11 @@ func TestNativeScheduleAcceptance(t *testing.T) {
 					call("schedule_query", `{"unexpected":true}`)
 				case scenario == "repair" && round == 1:
 					call("schedule_query", `{"query":"экономике"}`)
-				case scenario != "birthdays" && round == 0:
+				case scenario == "create" && round == 0:
+					call("schedule_create", `{"event":{"kind":"lesson","title":"Семинар по экономике","starts_at":"2026-09-21T15:00:00+03:00","ends_at":"2026-09-21T16:35:00+03:00","timezone":"Europe/Moscow","location":"235","recurrence":{"frequency":"weekly","interval":2}}}`)
+				case scenario == "create" && round == 1:
+					fmt.Fprint(w, `{"choices":[{"message":{"content":"Поставил семинар по экономике."},"finish_reason":"stop"}]}`)
+				case (scenario == "query" || scenario == "update") && round == 0:
 					call("schedule_query", `{"query":"экономике"}`)
 				case scenario == "update" && round == 1:
 					newStart := start.Add(6*time.Hour + 30*time.Minute)
@@ -155,13 +159,19 @@ func TestNativeScheduleAcceptance(t *testing.T) {
 			input := testInput()
 			input.Mode = ModeAdminPrivate
 			input.RunID = "telegram:1:20"
-			a := Agent{Client: ai.Service{BaseURL: server.URL, Key: "test", Model: "fixture"}, Tools: []Tool{ScheduleQueryTool{Schedule: svc}}, AdminTools: []Tool{ScheduleMutationTool{Schedule: svc, Operation: "update"}, ScheduleMutationTool{Schedule: svc, Operation: "create_batch"}}}
+			a := Agent{Client: ai.Service{BaseURL: server.URL, Key: "test", Model: "fixture"}, Tools: []Tool{ScheduleQueryTool{Schedule: svc}}, AdminTools: []Tool{ScheduleMutationTool{Schedule: svc, Operation: "update"}, ScheduleMutationTool{Schedule: svc, Operation: "create"}, ScheduleMutationTool{Schedule: svc, Operation: "create_batch"}}}
 			result, err := a.Run(ctx, input)
-			if err != nil || result.Reply != "Готово." {
+			if err != nil || result.Reply != "Готово." && result.Reply != "Поставил семинар по экономике." {
 				t.Fatalf("%+v %v", result, err)
 			}
 			if scenario == "update" && svc.Get(ctx, event.ID).StartsAt.Hour() != 16 {
 				t.Fatal("not moved")
+			}
+			if scenario == "create" {
+				var count int
+				if err := database.QueryRow("SELECT count(*) FROM events WHERE rrule LIKE '%INTERVAL=2%'").Scan(&count); err != nil || count != 1 {
+					t.Fatalf("create recurrence missing: count=%d err=%v", count, err)
+				}
 			}
 			if scenario == "birthdays" {
 				var count int

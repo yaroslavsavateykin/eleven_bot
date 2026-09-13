@@ -10,6 +10,34 @@ import (
 	"time"
 )
 
+func TestApplyResolvesOmittedCategory(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "category.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
+	start := time.Date(2026, 9, 21, 15, 0, 0, 0, time.FixedZone("MSK", 3*3600))
+	end := start.Add(95 * time.Minute)
+	rule := "FREQ=WEEKLY;INTERVAL=2"
+	location := "235"
+	created, err := s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Title: "Семинар по экономике", StartsAt: start, EndsAt: &end, Timezone: "Europe/Moscow", Location: &location, RRule: &rule}}, -1, 1)
+	if err != nil {
+		t.Fatalf("create with omitted category failed: %v", err)
+	}
+	if created.ID == 0 || created.Category != "lesson" {
+		t.Fatalf("category not resolved: %#v", created)
+	}
+	var persisted string
+	if err = d.QueryRow("SELECT category FROM events WHERE id=?", created.ID).Scan(&persisted); err != nil || persisted != "lesson" {
+		t.Fatalf("persisted category=%q err=%v", persisted, err)
+	}
+}
+
 func TestLifecycleImmediateApply(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "test.db"))

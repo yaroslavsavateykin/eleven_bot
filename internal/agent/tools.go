@@ -180,17 +180,17 @@ func queryRange(fromText, toText string, loc *time.Location) (time.Time, time.Ti
 	}
 	from, err := time.Parse(time.RFC3339, fromText)
 	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("from must be RFC3339")
+		return time.Time{}, time.Time{}, &ArgumentError{"from must be RFC3339"}
 	}
 	if toText == "" {
 		return from, from.AddDate(0, 0, 90), nil
 	}
 	to, err := time.Parse(time.RFC3339, toText)
 	if err != nil || !to.After(from) {
-		return time.Time{}, time.Time{}, fmt.Errorf("to must be RFC3339 and after from")
+		return time.Time{}, time.Time{}, &ArgumentError{"to must be RFC3339 and after from"}
 	}
 	if to.After(from.AddDate(1, 0, 0)) {
-		return time.Time{}, time.Time{}, fmt.Errorf("range cannot exceed one year")
+		return time.Time{}, time.Time{}, &ArgumentError{"range cannot exceed one year"}
 	}
 	return from, to, nil
 }
@@ -228,14 +228,15 @@ func (t ScheduleMutationTool) schemaBase() json.RawMessage {
 }
 func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) (result ToolResult, err error) {
 	defer func() {
-		if err != nil {
-			if _, ok := err.(*ArgumentError); !ok {
-				safe := schedule.SafeError(err.Error())
-				if safe != schedule.SafeError("") {
-					err = &ArgumentError{safe}
-				}
-			}
+		if err == nil {
+			return
 		}
+		if _, ok := err.(*ArgumentError); ok {
+			return
+		}
+		// Convert any domain or driver error into a safe model-facing message.
+		// The typed validation errors above remain classified as invalid arguments.
+		err = &ExecutionError{schedule.SafeError(err.Error())}
 	}()
 	if err := validateArguments(t.Schema(), raw); err != nil {
 		return ToolResult{}, err
@@ -507,14 +508,14 @@ func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (Tool
 	if args.From != "" {
 		v, err := time.Parse(time.RFC3339, args.From)
 		if err != nil {
-			return ToolResult{}, fmt.Errorf("from must be RFC3339")
+			return ToolResult{}, &ArgumentError{"from must be RFC3339"}
 		}
 		from = &v
 	}
 	if args.To != "" {
 		v, err := time.Parse(time.RFC3339, args.To)
 		if err != nil {
-			return ToolResult{}, fmt.Errorf("to must be RFC3339")
+			return ToolResult{}, &ArgumentError{"to must be RFC3339"}
 		}
 		to = &v
 	}

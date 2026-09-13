@@ -14,6 +14,12 @@ type ArgumentError struct{ Message string }
 
 func (e *ArgumentError) Error() string { return e.Message }
 
+// ExecutionError reports a safe, model-facing domain failure. It never carries
+// raw driver or SQLite text, so the agent can forward its message directly.
+type ExecutionError struct{ Message string }
+
+func (e *ExecutionError) Error() string { return e.Message }
+
 // validateArguments enforces the schema vocabulary used by this registry.
 // Typed decoding and schedule domain validation remain authoritative afterwards.
 func validateArguments(schema, raw json.RawMessage) error {

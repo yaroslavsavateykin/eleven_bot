@@ -219,34 +219,17 @@ func decodeAssistant(data []byte) (AssistantTurn, error) {
 		}
 		return nil
 	}
-	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
-		if err := consume(data); err != nil {
+	// A leading complete JSON body may be followed by SSE-style "data:" lines
+	// (e.g. 9router appends "data: [DONE]" to an otherwise non-streaming reply).
+	// Decode the leading JSON value first, then any trailing "data:" chunks.
+	if offset := jsonValueEnd(data); offset > 0 {
+		if err := consume(data[:offset]); err != nil {
 			return out, err
 		}
-	} else {
-		scanner := bufio.NewScanner(bytes.NewReader(data))
-		scanner.Buffer(make([]byte, 4096), 2<<20)
-		done := false
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			part := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if part == "[DONE]" {
-				done = true
-				break
-			}
-			if part == "" {
-				continue
-			}
-			if err := consume([]byte(part)); err != nil {
-				return out, err
-			}
-		}
-		if scanner.Err() != nil || (!done && out.FinishReason == "") {
-			return out, &Error{Kind: "provider_protocol"}
-		}
+		data = data[offset:]
+	}
+	if err := consumeSSE(data, consume); err != nil {
+		return out, err
 	}
 	indexes := make([]int, 0, len(calls))
 	for i := range calls {
@@ -262,8 +245,39 @@ func decodeAssistant(data []byte) (AssistantTurn, error) {
 		ids[c.ID] = true
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: c.ID, Name: c.Function.Name, Arguments: json.RawMessage(c.Function.Arguments)})
 	}
-	if out.FinishReason == "length" || (strings.TrimSpace(out.Content) == "" && len(out.ToolCalls) == 0) {
+	if strings.TrimSpace(out.Content) == "" && len(out.ToolCalls) == 0 {
 		return out, &Error{Kind: "provider_protocol"}
 	}
 	return out, nil
+}
+
+// jsonValueEnd returns the byte offset just past the first complete JSON value,
+// or -1 if data does not begin with valid JSON. It tolerates trailing content.
+func jsonValueEnd(data []byte) int {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(new(any)); err != nil {
+		return -1
+	}
+	return int(dec.InputOffset())
+}
+
+// consumeSSE parses "data:" lines from a streaming-shaped body, skipping the
+// "[DONE]" terminator and blank keep-alives. Returns nil when there are none.
+func consumeSSE(body []byte, consume func([]byte) error) error {
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 4096), 2<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		part := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if part == "" || part == "[DONE]" {
+			continue
+		}
+		if err := consume([]byte(part)); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }

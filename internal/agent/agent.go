@@ -156,8 +156,12 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 					if err != nil {
 						code, message = "tool_execution", "Не удалось выполнить инструмент. Проверьте аргументы и доступность события."
 						var invalid *ArgumentError
-						if errors.As(err, &invalid) {
+						var execErr *ExecutionError
+						switch {
+						case errors.As(err, &invalid):
 							code, message = "invalid_arguments", invalid.Message
+						case errors.As(err, &execErr):
+							code, message = "tool_execution", execErr.Message
 						}
 					} else if json.Unmarshal([]byte(result.Content), &data) != nil {
 						data = result.Content

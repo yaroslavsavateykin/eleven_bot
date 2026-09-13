@@ -52,10 +52,37 @@ data: [DONE]
 	}
 }
 func TestEmptyAssistantRejected(t *testing.T) {
-	for _, raw := range []string{`{"choices":[{"message":{"content":null}}]}`, `{"choices":[]}`, `{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}`} {
+	for _, raw := range []string{`{"choices":[{"message":{"content":null}}]}`, `{"choices":[]}`, `{"choices":[{"message":{"content":"   "}}]}`} {
 		if _, err := decodeAssistant([]byte(raw)); err == nil {
 			t.Fatal("accepted", raw)
 		}
+	}
+}
+
+func TestTruncatedTextStillReturned(t *testing.T) {
+	turn, err := decodeAssistant([]byte(`{"choices":[{"message":{"content":"partial answer"},"finish_reason":"length"}]}`))
+	if err != nil || turn.Content != "partial answer" {
+		t.Fatalf("%+v %v", turn, err)
+	}
+}
+
+func TestDecodeJSONWithTrailingDone(t *testing.T) {
+	// 9router appends an SSE "[DONE]" terminator directly after a non-streaming
+	// JSON body, with no separating newline.
+	raw := `{"choices":[{"message":{"content":"Ответ","reasoning_content":"thinking"},"finish_reason":"stop"}]}data: [DONE]
+`
+	turn, err := decodeAssistant([]byte(raw))
+	if err != nil || turn.Content != "Ответ" {
+		t.Fatalf("%+v %v", turn, err)
+	}
+}
+
+func TestDecodeJSONWithTrailingDoneAndToolCall(t *testing.T) {
+	raw := `{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"schedule_query","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}data: [DONE]
+`
+	turn, err := decodeAssistant([]byte(raw))
+	if err != nil || len(turn.ToolCalls) != 1 || turn.ToolCalls[0].ID != "call_1" {
+		t.Fatalf("%+v %v", turn, err)
 	}
 }
 
