@@ -41,7 +41,7 @@ func Validate(e Event) error {
 		return fmt.Errorf("invalid title or start")
 	}
 	switch e.Kind {
-	case "lesson", "deadline", "event", "note", "other":
+	case "lesson", "deadline", "event", "note", "other", "birthday":
 	default:
 		return fmt.Errorf("invalid kind")
 	}
@@ -81,6 +81,12 @@ func Validate(e Event) error {
 		}
 		// ponytail: finite one-year series keep conflict checks exhaustive; extend the ceiling with a bounded recurrence scheduler.
 		ceiling := e.StartsAt.AddDate(1, 0, 0)
+		if e.Kind == "birthday" {
+			if opt.Freq != rrule.YEARLY || e.AllDay == false {
+				return fmt.Errorf("birthday must be an all-day yearly recurrence")
+			}
+			ceiling = e.StartsAt.AddDate(101, 0, 0)
+		}
 		if opt.Count <= 0 && opt.Until.IsZero() {
 			return fmt.Errorf("recurrence requires COUNT or UNTIL within one year")
 		}

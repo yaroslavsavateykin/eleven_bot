@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 assert.equal(eventCategory({ kind: 'lesson' }).key, 'lesson');
 assert.equal(eventCategory({ kind: 'lesson', category: 'exam' }).priority, 2);
 assert.equal(eventCategory({ category: '__proto__' }).key, 'other');
-for (const category of ['lesson', 'event', 'test', 'quiz', 'exam', 'deadline', 'other']) assert.ok(eventCategory({ category }).label);
+for (const category of ['lesson', 'event', 'test', 'quiz', 'exam', 'deadline', 'birthday', 'other']) assert.ok(eventCategory({ category }).label);
+assert.equal(eventCategory({ kind: 'birthday', category: 'other' }).key, 'birthday');
 assert.ok(!readFileSync(new URL('../templates/index.html', import.meta.url), 'utf8').includes('В этот момент'));
 
 assert.equal(localDay('2026-09-06T21:30:00Z'), '2026-09-07');

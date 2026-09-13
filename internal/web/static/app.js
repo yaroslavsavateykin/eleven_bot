@@ -7,10 +7,12 @@ const categories = new Map([
   ['test', { label: 'Контрольная', priority: 2 }],
   ['exam', { label: 'Экзамен', priority: 2 }],
   ['deadline', { label: 'Дедлайн', priority: 2 }],
+  ['birthday', { label: 'День рождения', priority: 1 }],
   ['other', { label: 'Прочее', priority: 0 }],
 ]);
 
 export function eventCategory(event) {
+  if (event.kind === 'birthday') return { key: 'birthday', ...categories.get('birthday') };
   const key = categories.has(event.category) ? event.category : categories.has(event.kind) ? event.kind : 'other';
   return { key, ...categories.get(key) };
 }

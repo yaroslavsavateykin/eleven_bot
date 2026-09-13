@@ -16,7 +16,7 @@ func (s Service) normalizeRecurrence(e Event) (Event, error) {
 	}
 	rule := *e.RRule
 	e.RRule = &rule
-	if e.RecurrenceHorizon == "default" || e.RecurrenceHorizon == "semester" {
+	if e.RecurrenceHorizon == "default" || e.RecurrenceHorizon == "semester" || e.RecurrenceHorizon == "birthday" {
 		return e, nil
 	}
 	opt, err := rrule.StrToROption(*e.RRule)
@@ -36,6 +36,11 @@ func (s Service) normalizeRecurrence(e Event) (Event, error) {
 		loc = time.UTC
 	}
 	start := e.StartsAt.In(loc)
+	if e.Kind == "birthday" {
+		e.RecurrenceHorizon = "birthday"
+		*e.RRule = strings.TrimSuffix(*e.RRule, ";") + ";UNTIL=" + start.AddDate(100, 0, 0).UTC().Format("20060102T150405Z")
+		return e, nil
+	}
 	until := start.AddDate(0, 0, DefaultRecurrenceHorizonWeeks*7)
 	e.RecurrenceHorizon = "default"
 	if s.Semester.Contains(start, loc) {

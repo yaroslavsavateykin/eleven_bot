@@ -35,6 +35,7 @@ button:focus-visible{outline:2px solid #396e59;outline-offset:3px}
 .date-markers{height:6px;display:flex;gap:3px;align-items:center}
 .dot{width:4px;height:4px;border-radius:50%;background:var(--green-mid)}
 .dot.category-event,.dot.category-quiz{background:#9a78b5}
+.dot.category-birthday{background:#cc6788}
 .dot.category-test,.dot.category-exam,.dot.category-deadline{background:#c47a2c}
 .dot.category-other{background:#74867e}
 .day{min-width:0;padding:0 4px}
@@ -50,6 +51,7 @@ article span{font-size:12px;color:var(--muted);overflow-wrap:anywhere;max-width:
 .event-details{min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:4px}
 article .category{max-width:100%;font-size:10px;color:#365747;background:var(--green-soft);padding:1px 5px;border-radius:4px}
 article .category-event,article .category-quiz{color:#65427e;background:#eee4f7}
+article .category-birthday{color:#8a294c;background:#f9e0e9}
 article .category-test,article .category-exam,article .category-deadline{color:#7b430b;background:#f7e5c7;border:1px solid #d5a15c}
 article .category-other{color:#4c5e57;background:#dfe6e2}
 article .active-lesson{max-width:100%;color:#285d44;font-size:11px;font-weight:600;padding:2px 7px;border:1px solid #ffffffbd;border-radius:8px;background:linear-gradient(135deg,#f5fff3d9,#c9e4d699);box-shadow:inset 0 1px 0 #fff}

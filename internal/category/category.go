@@ -23,6 +23,8 @@ func Resolve(value, kind, title string) (string, error) {
 		switch kind {
 		case "lesson", "deadline", "event", "test", "quiz", "exam":
 			return kind, nil
+		case "birthday":
+			return "other", nil
 		case "":
 			return "event", nil
 		default:

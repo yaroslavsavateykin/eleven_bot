@@ -149,3 +149,12 @@ func TestScheduleUpdatePatchPreservesRecurrence(t *testing.T) {
 		t.Fatalf("updated=%#v", updated)
 	}
 }
+
+func TestBirthdayEventIsAnnualAndAllDay(t *testing.T) {
+	start := time.Date(2000, 5, 3, 12, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	event, err := (eventInput{Kind: "birthday", Category: "birthday", Title: "День рождения: Аня", StartsAt: start, EndsAt: &end, Timezone: "UTC"}).Event()
+	if err != nil || !event.AllDay || event.RRule == nil || *event.RRule != "FREQ=YEARLY" || event.Category != "other" {
+		t.Fatalf("event=%#v err=%v", event, err)
+	}
+}
