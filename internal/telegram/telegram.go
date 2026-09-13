@@ -227,7 +227,7 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 	ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
 	switch cmd {
 	case "/help", "/start":
-		s.sendReply(ctx, b, m.Chat.ID, m.ID, "/event описание, /today, /week, /all, /roast @username, /ask вопрос\nСобытия: создать, перенести, заменить, отменить. Корректные запросы сохраняются сразу; пересечения времени сохраняются с предупреждением.\nРасписание: "+s.BaseURL)
+		s.sendMarkdownReply(ctx, b, m.Chat.ID, m.ID, "*Команды:*\n`/event` описание, `/today`, `/week`, `/all`, `/roast` @username, `/ask` вопрос\n\nСобытия: создать, перенести, заменить, отменить. Корректные запросы сохраняются сразу; пересечения времени сохраняются с предупреждением.\n\nРасписание: "+s.BaseURL)
 	case "/today":
 		s.todayReply(ctx, b, m.Chat.ID, m.ID)
 	case "/week":
@@ -649,49 +649,83 @@ func commandFor(username, text string) (string, string) {
 	return parts[0], strings.TrimSpace(strings.TrimPrefix(text, f[0]))
 }
 func (s Service) send(ctx context.Context, b *bot.Bot, chatID int64, text string) (*models.Message, error) {
-	if s.finishThinking(ctx, b, chatID, text, "") {
-		return nil, nil
-	}
-	m, err := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text})
-	if err != nil {
-		slog.Error("telegram send", "error", err)
-	} else if m != nil {
-		if _, _, saveErr := s.conversations().StoreBot(ctx, conversation.BotMessage{GroupID: s.GroupID, TelegramChatID: chatID, TelegramMessageID: m.ID, Kind: "text", Text: text, SentAt: time.Unix(int64(m.Date), 0).UTC()}); saveErr != nil {
-			slog.Error("save bot message after successful Telegram send", "error", saveErr, "chat_id", chatID, "message_id", m.ID)
-		}
-	}
-	return m, err
+	return s.deliver(ctx, b, chatID, 0, text, "", false)
 }
 func (s Service) sendReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, text string) (*models.Message, error) {
-	if s.finishThinking(ctx, b, chatID, text, "") {
+	return s.deliver(ctx, b, chatID, replyTo, text, "", false)
+}
+func (s Service) sendHTML(ctx context.Context, b *bot.Bot, chatID int64, text string) (*models.Message, error) {
+	return s.deliver(ctx, b, chatID, 0, text, models.ParseModeHTML, false)
+}
+func (s Service) sendMarkdown(ctx context.Context, b *bot.Bot, chatID int64, text string) (*models.Message, error) {
+	return s.deliver(ctx, b, chatID, 0, text, models.ParseModeMarkdown, true)
+}
+func (s Service) sendMarkdownReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, text string) (*models.Message, error) {
+	return s.deliver(ctx, b, chatID, replyTo, text, models.ParseModeMarkdown, true)
+}
+
+// deliver sends a message with the given parse mode, editing a pending "Думаю…"
+// when present. When fallback is set and the formatted send fails, it retries
+// as plain text so the user always receives the result.
+func (s Service) deliver(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, text string, parseMode models.ParseMode, fallback bool) (*models.Message, error) {
+	if s.finishThinking(ctx, b, chatID, text, parseMode) {
 		return nil, nil
 	}
-	m, err := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text, ReplyParameters: &models.ReplyParameters{MessageID: replyTo}})
-	if err != nil {
-		slog.Error("telegram send", "error", err)
-	} else if m != nil {
-		if _, _, saveErr := s.conversations().StoreBot(ctx, conversation.BotMessage{GroupID: s.GroupID, TelegramChatID: chatID, TelegramMessageID: m.ID, Kind: "text", Text: text, ReplyToTelegramMessageID: &replyTo, SentAt: time.Unix(int64(m.Date), 0).UTC()}); saveErr != nil {
-			slog.Error("save bot message after successful Telegram send", "error", saveErr, "chat_id", chatID, "message_id", m.ID, "reply_to_message_id", replyTo)
-		}
+	m, err := s.post(ctx, b, chatID, replyTo, text, parseMode)
+	if err != nil && fallback && parseMode != "" {
+		m, err = s.post(ctx, b, chatID, replyTo, text, "")
 	}
 	return m, err
 }
 
-func (s Service) sendHTML(ctx context.Context, b *bot.Bot, chatID int64, text string) (*models.Message, error) {
-	if s.finishThinking(ctx, b, chatID, text, models.ParseModeHTML) {
-		return nil, nil
+func (s Service) post(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, text string, parseMode models.ParseMode) (*models.Message, error) {
+	params := &bot.SendMessageParams{ChatID: chatID, Text: text, ParseMode: parseMode}
+	if replyTo != 0 {
+		params.ReplyParameters = &models.ReplyParameters{MessageID: replyTo}
 	}
-	m, err := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text, ParseMode: models.ParseModeHTML})
+	m, err := b.SendMessage(ctx, params)
 	if err != nil {
 		slog.Error("telegram send", "error", err)
 		return nil, err
 	}
 	if m != nil {
-		if _, _, saveErr := s.conversations().StoreBot(ctx, conversation.BotMessage{GroupID: s.GroupID, TelegramChatID: chatID, TelegramMessageID: m.ID, Kind: "text", Text: text, SentAt: time.Unix(int64(m.Date), 0).UTC()}); saveErr != nil {
+		msg := conversation.BotMessage{GroupID: s.GroupID, TelegramChatID: chatID, TelegramMessageID: m.ID, Kind: "text", Text: text, SentAt: time.Unix(int64(m.Date), 0).UTC()}
+		if replyTo != 0 {
+			msg.ReplyToTelegramMessageID = &replyTo
+		}
+		if _, _, saveErr := s.conversations().StoreBot(ctx, msg); saveErr != nil {
 			slog.Error("save bot message after successful Telegram send", "error", saveErr, "chat_id", chatID, "message_id", m.ID)
 		}
 	}
 	return m, nil
+}
+
+// escapeMD escapes MarkdownV2 special characters so dynamic text renders literally.
+func escapeMD(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.NewReplacer(
+		`\`, `\\`,
+		`_`, `\_`,
+		`*`, `\*`,
+		`[`, `\[`,
+		`]`, `\]`,
+		`(`, `\(`,
+		`)`, `\)`,
+		`~`, `\~`,
+		"`", "\\`",
+		`>`, `\>`,
+		`#`, `\#`,
+		`+`, `\+`,
+		`-`, `\-`,
+		`=`, `\=`,
+		`|`, `\|`,
+		`{`, `\{`,
+		`}`, `\}`,
+		`.`, `\.`,
+		`!`, `\!`,
+	).Replace(s)
 }
 
 func (s Service) withThinking(ctx context.Context, b *bot.Bot, chatID int64, replyTo int) context.Context {
@@ -742,10 +776,10 @@ func (s Service) today(ctx context.Context, b *bot.Bot, chatID int64) {
 func (s Service) todayReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int) {
 	send := func(text string) {
 		if replyTo != 0 {
-			s.sendReply(ctx, b, chatID, replyTo, text)
+			s.sendMarkdownReply(ctx, b, chatID, replyTo, text)
 			return
 		}
-		s.send(ctx, b, chatID, text)
+		s.sendMarkdown(ctx, b, chatID, text)
 	}
 	st, err := s.Schedule.CurrentStatus(ctx, time.Now())
 	if err != nil {
@@ -758,12 +792,12 @@ func (s Service) todayReply(ctx context.Context, b *bot.Bot, chatID int64, reply
 	}
 	var lines []string
 	for _, e := range st.Today {
-		line := fmt.Sprintf("#%d", e.ID)
+		line := fmt.Sprintf("`#%d`", e.ID)
 		if e.AllDay {
 			if e.Category == "deadline" {
-				line += " Дедлайн: "
+				line += " Дедлайн:"
 			} else {
-				line += " Весь день "
+				line += " Весь день"
 			}
 		} else {
 			line += " " + e.StartsAt.In(s.Schedule.TZ).Format("15:04")
@@ -771,7 +805,7 @@ func (s Service) todayReply(ctx context.Context, b *bot.Bot, chatID int64, reply
 		if e.EndsAt != nil && !e.AllDay {
 			line += "–" + e.EndsAt.In(s.Schedule.TZ).Format("15:04")
 		}
-		lines = append(lines, line+" "+e.Title+" ("+e.Category+")")
+		lines = append(lines, line+" *"+escapeMD(e.Title)+"* ("+escapeMD(e.Category)+")")
 	}
 	send(strings.Join(lines, "\n") + "\n" + s.BaseURL)
 }
@@ -812,10 +846,10 @@ func (s Service) ask(ctx context.Context, b *bot.Bot, chatID int64, question str
 func (s Service) askReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, question string, userID int64) {
 	send := func(text string) {
 		if replyTo != 0 {
-			s.sendReply(ctx, b, chatID, replyTo, text)
+			s.sendMarkdownReply(ctx, b, chatID, replyTo, text)
 			return
 		}
-		s.send(ctx, b, chatID, text)
+		s.sendMarkdown(ctx, b, chatID, text)
 	}
 	if question == "" {
 		send("Напишите вопрос после /ask.")
@@ -841,10 +875,10 @@ func (s Service) roast(ctx context.Context, b *bot.Bot, chatID int64, arg string
 func (s Service) roastReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, arg string, reply *models.Message) {
 	send := func(text string) {
 		if replyTo != 0 {
-			s.sendReply(ctx, b, chatID, replyTo, text)
+			s.sendMarkdownReply(ctx, b, chatID, replyTo, text)
 			return
 		}
-		s.send(ctx, b, chatID, text)
+		s.sendMarkdown(ctx, b, chatID, text)
 	}
 	fields := strings.Fields(arg)
 	username := ""
@@ -921,7 +955,7 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 		current.Text = arg
 		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeAdminPrivate)
 	case "/help", "/start":
-		s.send(ctx, b, m.Chat.ID, "Можно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании.\n/sync preview — показать накопленные изменения\n/sync — опубликовать их группе")
+		s.sendMarkdown(ctx, b, m.Chat.ID, "*Команды:*\n`/sync preview` — показать накопленные изменения\n`/sync` — опубликовать их группе\n\nМожно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании.")
 	default:
 		s.send(ctx, b, m.Chat.ID, "Неизвестная команда. Напишите /help.")
 	}
@@ -951,17 +985,17 @@ func (s Service) calendarDump(ctx context.Context, b *bot.Bot, chatID int64) {
 				when += "–" + e.EndsAt.In(loc).Format("15:04")
 			}
 		}
-		line := fmt.Sprintf("#%d %s — %s %s", e.ID, e.Title, weekdayRu(e.StartsAt.In(loc).Weekday()), when)
+		line := fmt.Sprintf("`#%d` *%s* — %s %s", e.ID, escapeMD(e.Title), weekdayRu(e.StartsAt.In(loc).Weekday()), when)
 		if rec := recurrenceSummary(e, loc); rec != "" {
-			line += " (" + rec + ")"
+			line += " (" + escapeMD(rec) + ")"
 		}
 		if e.Location != nil && strings.TrimSpace(*e.Location) != "" {
-			line += ", ауд. " + *e.Location
+			line += ", ауд. " + escapeMD(*e.Location)
 		}
 		lines = append(lines, line)
 	}
-	for _, part := range telegramParts("Расписание:\n" + strings.Join(lines, "\n")) {
-		s.send(ctx, b, chatID, part)
+	for _, part := range telegramParts("*Расписание:*\n" + strings.Join(lines, "\n")) {
+		s.sendMarkdown(ctx, b, chatID, part)
 	}
 }
 
@@ -980,15 +1014,15 @@ func (s Service) peopleSummaries(ctx context.Context, b *bot.Bot, chatID int64) 
 			s.send(ctx, b, chatID, "Не удалось загрузить сводку о людях.")
 			return
 		}
-		line := name
+		line := "*" + escapeMD(name) + "*"
 		if username != "" {
-			line += " (@" + username + ")"
+			line += " (@" + escapeMD(username) + ")"
 		}
 		if role == "admin" {
 			line += " — админ"
 		}
 		if strings.TrimSpace(summary) != "" {
-			line += ": " + summary
+			line += ": " + escapeMD(summary)
 		}
 		lines = append(lines, line)
 	}
@@ -1000,8 +1034,8 @@ func (s Service) peopleSummaries(ctx context.Context, b *bot.Bot, chatID int64) 
 		s.send(ctx, b, chatID, "О людях пока ничего не накоплено.")
 		return
 	}
-	for _, part := range telegramParts("Сводка о людях:\n" + strings.Join(lines, "\n")) {
-		s.send(ctx, b, chatID, part)
+	for _, part := range telegramParts("*Сводка о людях:*\n" + strings.Join(lines, "\n")) {
+		s.sendMarkdown(ctx, b, chatID, part)
 	}
 }
 
@@ -1052,7 +1086,7 @@ func (s Service) pendingAnnouncements(ctx context.Context) ([]announcementChange
 }
 
 func (s Service) announcementDigest(changes []announcementChange) string {
-	lines := []string{"Обновления расписания:"}
+	lines := []string{"*Обновления расписания:*"}
 	for _, change := range changes {
 		e := change.Proposal.Event
 		verb := map[string]string{"event_create": "Добавлено", "event_update": "Обновлено", "event_cancel": "Отменено"}[change.Kind]
@@ -1069,7 +1103,7 @@ func (s Service) announcementDigest(changes []announcementChange) string {
 		if e.Category == "deadline" {
 			verb = "Дедлайн"
 		}
-		lines = append(lines, "• "+verb+": "+e.Title+" — "+when+".")
+		lines = append(lines, "• *"+verb+":* "+escapeMD(e.Title)+" — "+when+".")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1088,11 +1122,11 @@ func (s Service) sync(ctx context.Context, b *bot.Bot, adminChatID int64, previe
 	}
 	digest := s.announcementDigest(changes)
 	if preview {
-		s.send(ctx, b, adminChatID, "Будет опубликовано:\n\n"+digest)
+		s.sendMarkdown(ctx, b, adminChatID, "Будет опубликовано:\n\n"+digest)
 		return
 	}
 	for _, part := range telegramParts(digest) {
-		if _, err = s.send(ctx, b, s.ChatID, part); err != nil {
+		if _, err = s.sendMarkdown(ctx, b, s.ChatID, part); err != nil {
 			s.send(ctx, b, adminChatID, "Не удалось опубликовать изменения; они остались в очереди.")
 			return
 		}
@@ -1191,10 +1225,10 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	if replyTo != 0 {
-		s.sendReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
+		s.sendMarkdownReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
 		return
 	}
-	s.send(ctx, b, chatID, limit(result.Reply, 1800))
+	s.sendMarkdown(ctx, b, chatID, limit(result.Reply, 1800))
 }
 
 func recurrenceSummary(e schedule.Event, loc *time.Location) string {
