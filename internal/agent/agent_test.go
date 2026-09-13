@@ -188,6 +188,26 @@ func TestBirthdayBatchSuppliesMissingEndAndTimezone(t *testing.T) {
 	}
 }
 
+func TestBirthdayBatchAcceptsLooseAliasesAndDate(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-birthday-loose.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	tool := ScheduleMutationTool{Schedule: schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}, Operation: "create_batch"}
+	if _, err = tool.Execute(ctx, json.RawMessage(`{"birthdays":[{"name":"День рождения: Арсений Егоров","date":"18 мая","comment":"лишнее поле"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	var title string
+	if err = database.QueryRow("SELECT title FROM events WHERE kind='birthday'").Scan(&title); err != nil || title != "День рождения: Арсений Егоров" {
+		t.Fatalf("title=%q err=%v", title, err)
+	}
+}
+
 func TestScheduleQueryMatchesRussianInflections(t *testing.T) {
 	if !matchesQuery("Практикум по радиохимии", "радиохимия") {
 		t.Fatal("search did not match an inflectional form")

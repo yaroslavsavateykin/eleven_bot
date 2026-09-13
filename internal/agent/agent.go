@@ -57,7 +57,6 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			ToolCalls []ToolCall `json:"tool_calls"`
 		}
 		dec := json.NewDecoder(strings.NewReader(raw))
-		dec.DisallowUnknownFields()
 		if err = dec.Decode(&response); err != nil || dec.Decode(new(any)) != io.EOF {
 			// Gateways may prepend plain prose to the JSON object. Prefer the JSON
 			// reply and never expose its protocol envelope to Telegram users.

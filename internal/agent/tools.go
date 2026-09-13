@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"group411/internal/conversation"
 	"group411/internal/schedule"
@@ -261,17 +263,27 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 }
 
 func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	var args struct {
-		Events []eventInput `json:"events"`
-	}
-	if err := decode(raw, &args); err != nil {
+	var container map[string]json.RawMessage
+	if err := decode(raw, &container); err != nil {
 		return ToolResult{}, fmt.Errorf("invalid batch events: %w", err)
 	}
-	if len(args.Events) == 0 {
+	items := container["events"]
+	if len(items) == 0 {
+		items = container["birthdays"]
+	}
+	if len(items) == 0 {
+		items = container["items"]
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(items, &entries); err != nil || len(entries) == 0 {
 		return ToolResult{}, fmt.Errorf("batch events are required")
 	}
-	proposals := make([]schedule.Proposal, 0, len(args.Events))
-	for _, input := range args.Events {
+	proposals := make([]schedule.Proposal, 0, len(entries))
+	for _, entry := range entries {
+		input, err := decodeFlexibleEvent(entry, true, t.Schedule.TZ)
+		if err != nil {
+			return ToolResult{}, err
+		}
 		if input.Kind == "birthday" {
 			input = t.normalizeBirthday(input)
 		}
@@ -291,6 +303,85 @@ func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessa
 		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
 	}{Created: result.Events, Skipped: result.Skipped})
 	return ToolResult{Content: string(data)}, err
+}
+
+// decodeFlexibleEvent accepts common model aliases while the domain layer still
+// validates the final event before persistence.
+func decodeFlexibleEvent(raw json.RawMessage, birthdayDefault bool, loc *time.Location) (eventInput, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return eventInput{}, fmt.Errorf("event must be an object")
+	}
+	alias := func(target, source string) {
+		if len(fields[target]) == 0 && len(fields[source]) > 0 {
+			fields[target] = fields[source]
+		}
+	}
+	alias("title", "name")
+	alias("title", "text")
+	alias("starts_at", "date")
+	alias("starts_at", "start")
+	alias("ends_at", "end")
+	if birthdayDefault && len(fields["kind"]) == 0 {
+		fields["kind"] = json.RawMessage(`"birthday"`)
+	}
+	if date, ok := fields["starts_at"]; ok {
+		var value string
+		if json.Unmarshal(date, &value) == nil {
+			parsed, err := flexibleTime(value, loc)
+			if err != nil {
+				return eventInput{}, fmt.Errorf("invalid event date %q", value)
+			}
+			fields["starts_at"], _ = json.Marshal(parsed.Format(time.RFC3339))
+		}
+	}
+	data, _ := json.Marshal(fields)
+	var input eventInput
+	if err := decode(data, &input); err != nil {
+		return eventInput{}, err
+	}
+	if strings.TrimSpace(input.Title) == "" || input.StartsAt.IsZero() {
+		return eventInput{}, fmt.Errorf("event title and date are required")
+	}
+	return input, nil
+}
+
+func flexibleTime(value string, loc *time.Location) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, nil
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	for _, layout := range []string{"2006-01-02", "02.01.2006", "2.1.2006"} {
+		if parsed, err := time.ParseInLocation(layout, value, loc); err == nil {
+			return parsed, nil
+		}
+	}
+	parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	if len(parts) == 2 || len(parts) == 3 {
+		months := map[string]time.Month{"января": time.January, "февраля": time.February, "марта": time.March, "апреля": time.April, "мая": time.May, "июня": time.June, "июля": time.July, "августа": time.August, "сентября": time.September, "октября": time.October, "ноября": time.November, "декабря": time.December}
+		month, ok := months[parts[1]]
+		if !ok {
+			return time.Time{}, fmt.Errorf("unsupported date")
+		}
+		day, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return time.Time{}, fmt.Errorf("unsupported date")
+		}
+		year := time.Now().In(loc).Year()
+		if len(parts) == 3 {
+			year, err = strconv.Atoi(parts[2])
+			if err != nil {
+				return time.Time{}, fmt.Errorf("unsupported date")
+			}
+		}
+		parsed := time.Date(year, month, day, 0, 0, 0, 0, loc)
+		if parsed.Month() == month && parsed.Day() == day {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported date")
 }
 
 // Birthday lists commonly omit the birth year and end of the all-day interval.
@@ -492,7 +583,6 @@ func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (Tool
 
 func decode(raw json.RawMessage, target any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil || dec.Decode(new(any)) != io.EOF {
 		return fmt.Errorf("invalid tool arguments")
 	}
