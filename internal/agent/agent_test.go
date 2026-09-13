@@ -47,9 +47,10 @@ func TestAgentAnswersWithoutTool(t *testing.T) {
 func TestAgentExecutesOnlyRegisteredTool(t *testing.T) {
 	tool := &fakeTool{name: "schedule_query"}
 	client := &fakeClient{answers: []string{`{"reply":"","tool_calls":[{"name":"schedule_query","arguments":{}}]}`, `{"reply":"Завтра пара.","tool_calls":[]}`}}
-	result, err := (Agent{Client: client, Tools: []Tool{tool}}).Run(context.Background(), testInput())
-	if err != nil || result.Reply == "" || tool.calls != 1 {
-		t.Fatalf("result=%#v calls=%d err=%v", result, tool.calls, err)
+	var progress []string
+	result, err := (Agent{Client: client, Tools: []Tool{tool}, Progress: func(text string) { progress = append(progress, text) }}).Run(context.Background(), testInput())
+	if err != nil || result.Reply == "" || tool.calls != 1 || len(progress) != 1 || progress[0] != "Ищу нужное занятие в расписании…" {
+		t.Fatalf("result=%#v calls=%d progress=%v err=%v", result, tool.calls, progress, err)
 	}
 }
 func TestWriteToolsAreNotAvailableInGroupMode(t *testing.T) {

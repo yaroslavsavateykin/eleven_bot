@@ -18,6 +18,7 @@ type Agent struct {
 	Tools      []Tool // Tools available in every conversation.
 	AdminTools []Tool // Additional tools available only to the authenticated private admin.
 	MaxRounds  int
+	Progress   func(string)
 }
 
 func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
@@ -96,6 +97,9 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			continue
 		}
 		called[callKey] = struct{}{}
+		if a.Progress != nil {
+			a.Progress(toolProgress(call.Name))
+		}
 		result, err := tool.Execute(ctx, call.Arguments)
 		if err != nil {
 			slog.Warn("agent tool failed", "tool", call.Name, "error", err)
@@ -108,6 +112,23 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		prompt = appendToolResult(prompt, call.Name, result.Content)
 	}
 	return Result{Reply: "Не удалось завершить проверку данных за один запрос. Уточните, пожалуйста, название или дату нужного занятия."}, nil
+}
+
+func toolProgress(name string) string {
+	switch name {
+	case "schedule_query":
+		return "Ищу нужное занятие в расписании…"
+	case "group_search":
+		return "Проверяю сообщения группы…"
+	case "schedule_create":
+		return "Добавляю событие в расписание…"
+	case "schedule_update":
+		return "Обновляю запись в расписании…"
+	case "schedule_cancel":
+		return "Отменяю событие в расписании…"
+	default:
+		return "Проверяю данные…"
+	}
 }
 
 func completeAgentJSON(ctx context.Context, client Client, system, prompt string) (string, error) {

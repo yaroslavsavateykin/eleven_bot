@@ -659,6 +659,21 @@ func (s Service) finishThinking(ctx context.Context, b *bot.Bot, chatID int64, t
 	}
 	return true
 }
+
+// updateThinking keeps a single visible progress message while the agent works.
+func (s Service) updateThinking(ctx context.Context, b *bot.Bot, chatID int64, text string) {
+	pending, ok := ctx.Value(thinkingContextKey{}).(*thinkingResponse)
+	if !ok || pending == nil || pending.used || pending.chatID != chatID {
+		return
+	}
+	if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text}); err != nil {
+		slog.Debug("telegram edit agent progress", "error", err, "chat_id", chatID, "message_id", pending.messageID)
+		return
+	}
+	if err := s.conversations().UpdateBotText(ctx, chatID, pending.messageID, text); err != nil {
+		slog.Error("save agent progress", "error", err, "chat_id", chatID, "message_id", pending.messageID)
+	}
+}
 func (s Service) today(ctx context.Context, b *bot.Bot, chatID int64) {
 	s.todayReply(ctx, b, chatID, 0)
 }
@@ -966,7 +981,9 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 			messages = chain
 		}
 	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
+	botAgent := s.Agent
+	botAgent.Progress = func(text string) { s.updateThinking(ctx, b, chatID, text) }
+	result, err := botAgent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
 	if err != nil {
 		slog.Error("agent", "error", err)
 		return
