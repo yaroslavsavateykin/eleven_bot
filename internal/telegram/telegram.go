@@ -447,7 +447,7 @@ func (s Service) dailyImageContext(ctx context.Context, b *bot.Bot) {
 		s.enrichMessages(ctx)
 	}
 	run()
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 	for {
 		select {
@@ -584,8 +584,8 @@ func (s Service) enrichImages(ctx context.Context, b *bot.Bot) {
 }
 
 // enrichMessages summarizes every text-bearing message (text and transcribed
-// voice) into a short factual note per user, capped at 300 chars. Runs hourly
-// over the unprocessed messages from the last 48 hours.
+// voice) into a short factual note per user, capped at 300 chars. Runs once a
+// day (plus on startup) over the unprocessed messages from the last 48 hours.
 func (s Service) enrichMessages(ctx context.Context) {
 	if s.AI.Key == "" || s.AI.Model == "" {
 		return
