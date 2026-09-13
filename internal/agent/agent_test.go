@@ -51,6 +51,13 @@ func TestToolDefinitionsAreCompact(t *testing.T) {
 		t.Fatalf("definition=%q", definition)
 	}
 }
+
+func TestArgumentShapeDoesNotExposeValues(t *testing.T) {
+	shape := argumentShape(json.RawMessage(`{"events":[{"title":"private value","phone":"7999"}]}`))
+	if shape != "object:events" || strings.Contains(shape, "private") || strings.Contains(shape, "7999") {
+		t.Fatalf("shape=%q", shape)
+	}
+}
 func TestAgentExecutesOnlyRegisteredTool(t *testing.T) {
 	tool := &fakeTool{name: "schedule_query"}
 	client := &fakeClient{answers: []string{`{"reply":"","tool_calls":[{"name":"schedule_query","arguments":{}}]}`, `{"reply":"Завтра пара.","tool_calls":[]}`}}

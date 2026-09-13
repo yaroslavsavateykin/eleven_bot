@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -106,7 +107,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		}
 		result, err := tool.Execute(ctx, call.Arguments)
 		if err != nil {
-			slog.Warn("agent tool failed", "tool", call.Name, "error", err)
+			slog.Warn("agent tool failed", "tool", call.Name, "argument_shape", argumentShape(call.Arguments), "error", err)
 			// Invalid model arguments are recoverable: show the bounded error to the
 			// next agent round so it can repair its structured tool call.
 			prompt = appendToolResult(prompt, call.Name, "Ошибка выполнения: "+err.Error()+". Исправь аргументы инструмента или ответь пользователю без tool call.")
@@ -116,6 +117,30 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		prompt = appendToolResult(prompt, call.Name, result.Content)
 	}
 	return Result{Reply: "Не удалось завершить проверку данных за один запрос. Уточните, пожалуйста, название или дату нужного занятия."}, nil
+}
+
+func argumentShape(raw json.RawMessage) string {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "invalid_json"
+	}
+	switch value := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return "object:" + strings.Join(keys, ",")
+	case []any:
+		return fmt.Sprintf("array:%d", len(value))
+	case string:
+		return "string"
+	case nil:
+		return "null"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
 }
 
 // Full JSON Schemas for batch tools consume most of the gateway's small input
