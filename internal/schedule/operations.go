@@ -412,12 +412,16 @@ func (s Service) prepareProposal(p Proposal) (Proposal, error) {
 }
 
 // resolveCategory fills an omitted category from kind/title so the persisted
-// event always satisfies the category CHECK constraint. Domain validation in
-// Validate already rejects unsupported explicit categories.
+// event always satisfies the category CHECK constraint. An unrecognized
+// explicit category (e.g. a Russian "семинар" the model invents) is not a
+// hard error: fall back to the kind/title-derived value.
 func (s Service) resolveCategory(e *Event) error {
 	resolved, err := category.Resolve(e.Category, e.Kind, e.Title)
 	if err != nil {
-		return err
+		resolved, err = category.Resolve("", e.Kind, e.Title)
+		if err != nil {
+			return err
+		}
 	}
 	e.Category = resolved
 	return nil

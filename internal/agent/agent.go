@@ -174,7 +174,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			}
 			raw, _ := json.Marshal(envelope)
 			request.Messages = append(request.Messages, ai.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(raw)})
-			slog.Info("tool result", "run_id", input.RunID, "round", round, "tool", call.Name, "tool_call_id", call.ID, "argument_shape", argumentShape(call.Arguments), "duration", time.Since(start), "success", code == "", "category", code)
+			slog.Info("tool result", "run_id", input.RunID, "round", round, "tool", call.Name, "tool_call_id", call.ID, "argument_shape", argumentShape(call.Arguments), "duration", time.Since(start), "success", code == "", "category", code, "message", message)
 		}
 	}
 	slog.Warn("agent stopped", "run_id", input.RunID, "category", "round_limit")

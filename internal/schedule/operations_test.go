@@ -38,6 +38,28 @@ func TestApplyResolvesOmittedCategory(t *testing.T) {
 	}
 }
 
+func TestApplyResolvesUnrecognizedExplicitCategory(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "category-lenient.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
+	start := time.Date(2026, 9, 21, 15, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	created, err := s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "семинар", Title: "Семинар по экономике", StartsAt: start, EndsAt: &end, Timezone: "UTC"}}, -1, 1)
+	if err != nil {
+		t.Fatalf("create with unrecognized category failed: %v", err)
+	}
+	if created.Category != "lesson" {
+		t.Fatalf("category not normalized: %#v", created)
+	}
+}
+
 func TestLifecycleImmediateApply(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
