@@ -1,8 +1,14 @@
 # Eleven Bot
 
-Telegram-бот для учебной группы: отвечает на вопросы, работает с расписанием и дедлайнами, умеет искать по истории сообщений группы и использует AI через OpenAI-compatible API.
+Telegram-бот для учебной группы: отвечает на учебные вопросы, работает с расписанием и дедлайнами, ищет по истории сообщений и использует AI через OpenAI-compatible API.
 
-Основной способ запуска — Docker Compose. Данные хранятся в SQLite в каталоге `data/` и не пропадают после перезапуска контейнера.
+На сервере приложение запускается из готового Docker-образа:
+
+```text
+ghcr.io/yaroslavsavateykin/eleven_bot:latest
+```
+
+Собирать проект на сервере не нужно. Docker Compose только скачивает опубликованный образ и запускает его.
 
 ## Что понадобится
 
@@ -12,9 +18,9 @@ Telegram-бот для учебной группы: отвечает на воп
 - доступ к OpenAI-compatible API;
 - Docker и Docker Compose.
 
-## 1. Установка Docker на сервер
+## 1. Установка Docker
 
-Подключитесь к серверу по SSH и выполните:
+Подключитесь к серверу по SSH:
 
 ```bash
 sudo apt update
@@ -29,7 +35,7 @@ sudo usermod -aG docker "$USER"
 newgrp docker
 ```
 
-Проверьте:
+Проверка:
 
 ```bash
 docker --version
@@ -38,10 +44,14 @@ docker compose version
 
 ## 2. Установка Eleven Bot
 
+Клонируйте репозиторий. На сервере нужны в основном `docker-compose.yml`, `.env` и каталог с базой.
+
 ```bash
 git clone https://github.com/yaroslavsavateykin/eleven_bot.git
 cd eleven_bot
+
 cp .env.example .env
+
 mkdir -p data
 sudo chown -R 1000:1000 data
 ```
@@ -52,7 +62,19 @@ sudo chown -R 1000:1000 data
 nano .env
 ```
 
-Минимально нужно заполнить:
+В начале файла уже указан готовый Docker-образ:
+
+```env
+ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:latest
+```
+
+Обычно оставляйте `:latest`. Если нужен фиксированный релиз, можно закрепить конкретную версию:
+
+```env
+ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:v0.1.0
+```
+
+Основные настройки:
 
 ```env
 # Telegram
@@ -68,7 +90,7 @@ GROUP_TIMEZONE=Europe/Moscow
 # База
 DATABASE_PATH=/data/app.db
 
-# Веб-интерфейс
+# Веб
 HTTP_ADDR=:6767
 BASE_URL=http://SERVER_IP:6767
 ADMIN_PASSWORD=очень-длинный-пароль
@@ -91,47 +113,47 @@ RAW_MESSAGE_RETENTION_HOURS=48
 GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
 ```
 
-Если у вас есть домен и reverse proxy, укажите его в `BASE_URL`, например:
-
-```env
-BASE_URL=https://schedule.example.org
-```
-
-Секреты из `.env` не коммитьте в Git.
+Секреты из `.env` не добавляйте в Git.
 
 ## 3. Первый запуск
 
-Соберите и запустите контейнер:
+Сначала скачайте готовый образ:
 
 ```bash
-docker compose up -d --build
+docker compose pull
 ```
 
-Проверьте состояние:
+Затем запустите:
+
+```bash
+docker compose up -d
+```
+
+Проверка:
 
 ```bash
 docker compose ps
 curl http://127.0.0.1:6767/healthz
 ```
 
-Посмотреть логи:
+Логи:
 
 ```bash
 docker compose logs -f app
 ```
 
-Если `/healthz` отвечает успешно, приложение запущено.
+На сервере ничего не компилируется: `docker compose pull` получает уже собранный образ из GHCR.
 
 ## 4. Получение Telegram Group Chat ID
 
-При первом запуске оставьте:
+Для первого запуска оставьте:
 
 ```env
 TELEGRAM_DISCOVERY_MODE=true
 TELEGRAM_GROUP_CHAT_ID=
 ```
 
-При этом `ADMIN_TELEGRAM_USER_ID` уже должен быть указан.
+При этом `ADMIN_TELEGRAM_USER_ID` уже должен быть заполнен.
 
 После запуска отправьте в нужной Telegram-группе:
 
@@ -145,24 +167,24 @@ TELEGRAM_GROUP_CHAT_ID=
 -1001234567890
 ```
 
-Запишите его в `.env` и сразу выключите discovery mode:
+Запишите его в `.env`:
 
 ```env
 TELEGRAM_GROUP_CHAT_ID=-1001234567890
 TELEGRAM_DISCOVERY_MODE=false
 ```
 
-Примените изменения:
+Пересоздайте контейнер:
 
 ```bash
 docker compose up -d --force-recreate
 ```
 
-После этого бот будет работать только с настроенной группой.
+Discovery mode после настройки лучше всегда держать выключенным.
 
-## 5. Проверка бота
+## 5. Проверка Telegram-бота
 
-В Telegram можно проверить, например:
+Например:
 
 ```text
 /today
@@ -171,13 +193,61 @@ docker compose up -d --force-recreate
 /ask что завтра по парам?
 ```
 
-В группе бот отвечает на команды, прямое упоминание `@username_бота` и reply на сообщение самого бота.
+В группе бот реагирует на команды, прямое упоминание и reply на сообщение самого бота.
 
-В личных сообщениях работать с ботом может только пользователь из `ADMIN_TELEGRAM_USER_ID`.
+В личных сообщениях доступ разрешён только пользователю из `ADMIN_TELEGRAM_USER_ID`.
 
-## Управление сервером
+## Обновление сервера
 
-### Логи
+Если используется `:latest`, обновление выглядит так:
+
+```bash
+cd eleven_bot
+git pull
+docker compose pull
+docker compose up -d
+```
+
+Проверка после обновления:
+
+```bash
+docker compose ps
+curl http://127.0.0.1:6767/healthz
+docker compose logs --tail=100 app
+```
+
+Никакого `docker compose build` на сервере не требуется.
+
+## Откат на конкретный релиз
+
+Откройте `.env`:
+
+```bash
+nano .env
+```
+
+И вместо `:latest` укажите нужный release tag:
+
+```env
+ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:v0.1.0
+```
+
+Затем:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Чтобы вернуться на последнюю версию:
+
+```env
+ELEVEN_BOT_IMAGE=ghcr.io/yaroslavsavateykin/eleven_bot:latest
+```
+
+## Управление контейнером
+
+Логи:
 
 ```bash
 docker compose logs -f app
@@ -189,52 +259,35 @@ docker compose logs -f app
 docker compose logs --tail=100 app
 ```
 
-### Перезапуск
+Перезапуск:
 
 ```bash
 docker compose restart app
 ```
 
-### Остановка
+Остановка:
 
 ```bash
 docker compose down
 ```
 
-База при этом остаётся в `./data/`.
-
-### Запуск
+Запуск:
 
 ```bash
 docker compose up -d
 ```
 
-## Обновление
-
-Из директории проекта:
-
-```bash
-git pull
-docker compose up -d --build
-docker compose ps
-```
-
-После обновления полезно проверить:
-
-```bash
-curl http://127.0.0.1:6767/healthz
-docker compose logs --tail=100 app
-```
+Контейнер настроен с `restart: unless-stopped`, поэтому после перезагрузки сервера он запускается автоматически вместе с Docker.
 
 ## Резервная копия базы
 
-SQLite находится здесь:
+SQLite хранится в:
 
 ```text
 ./data/app.db
 ```
 
-Для простой безопасной резервной копии:
+Простой вариант резервной копии:
 
 ```bash
 docker compose stop app
@@ -242,27 +295,83 @@ cp data/app.db "$HOME/eleven_bot-$(date +%F-%H%M).db"
 docker compose start app
 ```
 
-## Доступ к веб-интерфейсу
+## Веб-интерфейс
 
-По умолчанию приложение слушает порт `6767`.
+Приложение слушает порт `6767`.
 
-Если вы хотите открывать его напрямую извне, разрешите порт в firewall:
+Для временного прямого доступа:
 
 ```bash
 sudo ufw allow 6767/tcp
 ```
 
-Тогда интерфейс будет доступен по адресу:
+После этого:
 
 ```text
 http://SERVER_IP:6767
 ```
 
-Для постоянного публичного сервера лучше использовать домен, HTTPS и reverse proxy (Caddy/Nginx), а наружу не публиковать порт `6767` напрямую.
+Для постоянного публичного сервера лучше использовать домен, HTTPS и reverse proxy, например Caddy или Nginx, а порт `6767` наружу не публиковать.
 
-## Разработка без Docker
+## Как выпустить новый релиз
 
-Нужен Go 1.27:
+В репозитории есть отдельный GitHub Action:
+
+```text
+Actions → Release → Run workflow
+```
+
+Он запускается вручную и принимает номер версии, например:
+
+```text
+v0.1.0
+```
+
+Release workflow:
+
+1. проверяет формат версии;
+2. запускает `go test ./...`;
+3. запускает `go vet ./...`;
+4. запускает тесты веб-части;
+5. собирает Docker-образ в GitHub Actions;
+6. публикует его в GHCR;
+7. создаёт теги образа `v0.1.0`, `0.1.0`, `0.1`, `0`, `latest` и `sha-...`;
+8. создаёт GitHub Release с автоматически сгенерированными release notes.
+
+Для публикации образа workflow использует repository secret:
+
+```text
+GHCR_TOKEN
+```
+
+После успешного release на сервере достаточно:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+## CI и Release
+
+Обычный CI находится в:
+
+```text
+.github/workflows/ci.yml
+```
+
+Он запускает тесты на push и pull request, но ничего не публикует.
+
+Ручная публикация релиза находится в:
+
+```text
+.github/workflows/release.yml
+```
+
+Таким образом обычный push в `main` не создаёт новый Docker-образ автоматически.
+
+## Разработка локально
+
+Для разработки без Docker нужен Go 1.27:
 
 ```bash
 go test ./...
@@ -278,17 +387,21 @@ make vet
 make run
 ```
 
+При необходимости локально собрать Docker-образ можно обычным `docker build`, но для production-сервера это не требуется.
+
 ## Структура проекта
 
 ```text
-cmd/app/          точка входа
-internal/         основная логика приложения
-prompts/          AI-промпты
-docs/             архитектура и OpenAPI
-data/             SQLite-база при локальном Docker-запуске
-Dockerfile
-docker-compose.yml
+cmd/app/                   точка входа
+internal/                  основная логика
+prompts/                   AI-промпты
+docs/                      архитектура и OpenAPI
+data/                      SQLite
+.github/workflows/ci.yml   обычные проверки
+.github/workflows/release.yml
+Dockerfile                 сборка production image
+docker-compose.yml         запуск готового image
 .env.example
 ```
 
-Подробности внутренней архитектуры находятся в [docs/architecture.md](docs/architecture.md), а правила для AI-агентов — в [AI_AGENTS.md](AI_AGENTS.md).
+Подробности архитектуры находятся в [docs/architecture.md](docs/architecture.md), правила для AI-агентов — в [AI_AGENTS.md](AI_AGENTS.md).
