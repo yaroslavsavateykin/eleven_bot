@@ -16,7 +16,7 @@ type ScheduleQueryTool struct{ Schedule schedule.Service }
 
 func (t ScheduleQueryTool) Name() string { return "schedule_query" }
 func (t ScheduleQueryTool) Description() string {
-	return "Queries compact schedule occurrences. Use date ranges for today, tomorrow or a week; use query and limit=1 for the next matching event."
+	return "Finds schedule occurrences and recurring event series. Put only the subject/name into query, never weekday, date, pair number, or an action. Use the returned ID to update or cancel an event."
 }
 func (t ScheduleQueryTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"from":{"type":"string","description":"RFC3339 timestamp"},"to":{"type":"string","description":"RFC3339 timestamp, exclusive"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}`)
@@ -45,6 +45,12 @@ func (t ScheduleQueryTool) Execute(ctx context.Context, raw json.RawMessage) (To
 			}
 		}
 		events = filtered
+		if len(events) == 0 {
+			events, err = t.matchSeries(ctx, args.Query)
+			if err != nil {
+				return ToolResult{}, err
+			}
+		}
 	}
 	limit := args.Limit
 	if limit <= 0 || limit > 20 {
@@ -68,6 +74,38 @@ func (t ScheduleQueryTool) Execute(ctx context.Context, raw json.RawMessage) (To
 	return ToolResult{Content: string(data)}, err
 }
 
+func (t ScheduleQueryTool) matchSeries(ctx context.Context, query string) ([]schedule.Event, error) {
+	words := subjectWords(query)
+	if len(words) == 0 {
+		return nil, nil
+	}
+	candidates, err := t.Schedule.Candidates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	bestScore := 0
+	matched := make([]schedule.Event, 0, len(candidates))
+	for _, event := range candidates {
+		score := 0
+		for _, word := range words {
+			for _, candidate := range strings.Fields(normalizeSearch(event.Title + " " + value(event.Description) + " " + value(event.Location))) {
+				if commonPrefixRunes(word, candidate) >= 5 {
+					score++
+					break
+				}
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			matched = matched[:0]
+		}
+		if score > 0 && score == bestScore {
+			matched = append(matched, event)
+		}
+	}
+	return matched, nil
+}
+
 // matchesQuery first preserves exact phrase matching, then accepts inflectional
 // variants such as "радиохимия" and "радиохимии" without broad fuzzy matching.
 func matchesQuery(text, query string) bool {
@@ -88,6 +126,22 @@ func matchesQuery(text, query string) bool {
 		}
 	}
 	return query != ""
+}
+
+func subjectWords(query string) []string {
+	ignored := map[string]bool{
+		"в": true, "во": true, "на": true, "по": true, "и": true, "с": true, "до": true,
+		"понедельник": true, "вторник": true, "среда": true, "четверг": true, "пятница": true, "суббота": true, "воскресенье": true,
+		"следующий": true, "ближайший": true, "пара": true, "пары": true, "первой": true, "второй": true, "третьей": true, "четвертой": true, "пятой": true,
+		"убери": true, "удали": true, "отмени": true, "исправь": true, "измени": true, "перенеси": true, "длину": true, "чтобы": true, "был": true,
+	}
+	var words []string
+	for _, word := range strings.Fields(normalizeSearch(query)) {
+		if len([]rune(word)) >= 5 && !ignored[word] {
+			words = append(words, word)
+		}
+	}
+	return words
 }
 
 func normalizeSearch(text string) string {
@@ -152,6 +206,9 @@ func (t ScheduleMutationTool) Schema() json.RawMessage {
 	if t.Operation == "cancel" {
 		return json.RawMessage(`{"type":"object","required":["target_id"],"properties":{"target_id":{"type":"integer"}},"additionalProperties":false}`)
 	}
+	if t.Operation == "update" {
+		return json.RawMessage(`{"type":"object","required":["target_id","changes"],"properties":{"target_id":{"type":"integer"},"changes":{"type":"object","properties":{"title":{"type":"string"},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":"string","description":"RFC3339"},"location":{"type":["string","null"]},"description":{"type":["string","null"]},"all_day":{"type":"boolean"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
+	}
 	return json.RawMessage(`{"type":"object","required":["event"],"properties":{"target_id":{"type":"integer"},"event":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":["string","null"],"description":"RFC3339"},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
 }
 func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
@@ -164,6 +221,9 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 		}
 		return t.apply(ctx, t.Schedule.Get(ctx, args.TargetID))
 	}
+	if t.Operation == "update" {
+		return t.update(ctx, raw)
+	}
 	var args struct {
 		TargetID int64      `json:"target_id"`
 		Event    eventInput `json:"event"`
@@ -175,22 +235,56 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 	if err != nil {
 		return ToolResult{}, err
 	}
-	if t.Operation == "update" {
-		if args.TargetID <= 0 {
-			return ToolResult{}, fmt.Errorf("update requires target_id")
-		}
-		current := t.Schedule.Get(ctx, args.TargetID)
-		if current.ID == 0 || current.Status != "active" {
-			return ToolResult{}, fmt.Errorf("active event not found")
-		}
-		e.ID, e.GroupID = current.ID, t.Schedule.GroupID
-		return t.applyProposal(ctx, schedule.Proposal{Operation: "update", Event: e, Before: schedule.Snapshot(current), Announce: t.Announce})
-	}
 	if t.Operation != "create" {
 		return ToolResult{}, fmt.Errorf("invalid schedule operation")
 	}
 	e.GroupID = t.Schedule.GroupID
 	return t.applyProposal(ctx, schedule.Proposal{Operation: "create", Event: e, Announce: t.Announce})
+}
+
+func (t ScheduleMutationTool) update(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	var args struct {
+		TargetID int64 `json:"target_id"`
+		Changes  struct {
+			Title       *string    `json:"title"`
+			StartsAt    *time.Time `json:"starts_at"`
+			EndsAt      *time.Time `json:"ends_at"`
+			Location    **string   `json:"location"`
+			Description **string   `json:"description"`
+			AllDay      *bool      `json:"all_day"`
+			Tags        *[]string  `json:"tags"`
+		} `json:"changes"`
+	}
+	if err := decode(raw, &args); err != nil || args.TargetID <= 0 {
+		return ToolResult{}, fmt.Errorf("invalid update arguments")
+	}
+	current := t.Schedule.Get(ctx, args.TargetID)
+	if current.ID == 0 || current.Status != "active" {
+		return ToolResult{}, fmt.Errorf("active event not found")
+	}
+	updated := current
+	if args.Changes.Title != nil {
+		updated.Title = *args.Changes.Title
+	}
+	if args.Changes.StartsAt != nil {
+		updated.StartsAt = *args.Changes.StartsAt
+	}
+	if args.Changes.EndsAt != nil {
+		updated.EndsAt = args.Changes.EndsAt
+	}
+	if args.Changes.Location != nil {
+		updated.Location = *args.Changes.Location
+	}
+	if args.Changes.Description != nil {
+		updated.Description = *args.Changes.Description
+	}
+	if args.Changes.AllDay != nil {
+		updated.AllDay = *args.Changes.AllDay
+	}
+	if args.Changes.Tags != nil {
+		updated.Tags = *args.Changes.Tags
+	}
+	return t.applyProposal(ctx, schedule.Proposal{Operation: "update", Event: updated, Before: schedule.Snapshot(current), Announce: t.Announce})
 }
 func (t ScheduleMutationTool) apply(ctx context.Context, current schedule.Event) (ToolResult, error) {
 	if current.ID == 0 || current.Status != "active" {

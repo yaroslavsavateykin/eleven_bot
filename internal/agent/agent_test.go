@@ -3,10 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"group411/internal/conversation"
+	"group411/internal/db"
+	"group411/internal/schedule"
 )
 
 type fakeClient struct{ answers []string }
@@ -86,5 +91,60 @@ func TestScheduleQueryMatchesRussianInflections(t *testing.T) {
 	}
 	if matchesQuery("Практикум по электрохимии", "радиохимия") {
 		t.Fatal("search matched an unrelated subject")
+	}
+}
+
+func TestScheduleQueryFindsSeriesDespiteWeekdayWords(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-tools.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}
+	start := time.Now().UTC().AddDate(0, 0, 2).Truncate(time.Minute)
+	end := start.Add(95 * time.Minute)
+	rule := "FREQ=WEEKLY;COUNT=10"
+	for _, title := range []string{"Семинар по экономике", "Практикум по экономике"} {
+		event := schedule.Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: title, StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}
+		if _, _, err = svc.Create(ctx, event, "test", "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := (ScheduleQueryTool{Schedule: svc}).Execute(ctx, json.RawMessage(`{"query":"семинар по экономике во вторник","limit":5}`))
+	if err != nil || !strings.Contains(result.Content, "Семинар по экономике") || strings.Contains(result.Content, "Практикум по экономике") {
+		t.Fatalf("result=%s err=%v", result.Content, err)
+	}
+}
+
+func TestScheduleUpdatePatchPreservesRecurrence(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-update.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}
+	start := time.Now().UTC().AddDate(0, 0, 2).Truncate(time.Minute)
+	end := start.Add(5 * time.Hour)
+	rule := "FREQ=WEEKLY;COUNT=10"
+	created, _, err := svc.Create(ctx, schedule.Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Семинар по экономике", StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}, "test", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newEnd := start.Add(95 * time.Minute)
+	tool := ScheduleMutationTool{Schedule: svc, Operation: "update"}
+	if _, err = tool.Execute(ctx, json.RawMessage(`{"target_id":`+fmt.Sprint(created.ID)+`,"changes":{"ends_at":"`+newEnd.Format(time.RFC3339)+`"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	updated := svc.Get(ctx, created.ID)
+	if updated.RRule == nil || *updated.RRule != rule || updated.EndsAt == nil || !updated.EndsAt.Equal(newEnd) {
+		t.Fatalf("updated=%#v", updated)
 	}
 }
