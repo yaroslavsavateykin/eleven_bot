@@ -332,27 +332,24 @@ http://SERVER_IP:6767
 
 ## Выпуск нового релиза
 
-В GitHub:
+Релиз запускается **автоматически** при пуше versioned тега вида `v0.1.0`:
 
-```text
-Actions → Release → Run workflow
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
 ```
 
-Введите версию, например:
-
-```text
-v0.1.0
-```
-
-Release Action:
+Release Action при получении тега:
 
 1. запускает Go-тесты и `go vet`;
 2. запускает тесты web-части;
 3. собирает Docker image в GitHub Actions;
 4. публикует image в GHCR;
 5. обновляет `:latest`;
-6. публикует version tags;
+6. публикует version tags (`v0.1.0`, `0.1`, `0`);
 7. создаёт GitHub Release с release notes.
+
+Можно запустить вручную без тега — GitHub → Actions → Release → Run workflow, указав версию.
 
 После этого на сервере достаточно:
 
@@ -362,7 +359,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Обычный CI ничего не публикует — публикация production image выполняется только через отдельный Release workflow.
+Обычный CI ничего не публикует — публикация production image выполняется только через Release workflow (по тегу или вручную).
 
 ## Для разработки
 
