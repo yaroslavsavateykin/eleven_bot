@@ -285,7 +285,7 @@ func TestScheduleQueryDateWordDoesNotFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	from := start.Truncate(24 * time.Hour).Format(time.RFC3339)
-	to := start.Truncate(24 * time.Hour).AddDate(0, 0, 1).Format(time.RFC3339)
+	to := start.Truncate(24*time.Hour).AddDate(0, 0, 1).Format(time.RFC3339)
 	result, err := (ScheduleQueryTool{Schedule: svc}).Execute(ctx, json.RawMessage(`{"from":"`+from+`","to":"`+to+`","query":"завтра"}`))
 	if err != nil || !strings.Contains(result.Content, "Лекция по химии") {
 		t.Fatalf("result=%s err=%v", result.Content, err)

@@ -10,6 +10,39 @@ import (
 	"group411/internal/db"
 )
 
+func TestPruneRemovesMessagesWithContextEntries(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "prune-context.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','',''); INSERT INTO users(id,telegram_user_id,created_at,updated_at) VALUES(1,1,'','')`); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: database}
+	m, _, err := s.Ingest(ctx, Incoming{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 1, UserID: 1, Kind: "text", Text: "прошлое сообщение", SentAt: time.Now().Add(-72 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.ExecContext(ctx, "UPDATE messages SET created_at=? WHERE id=?", time.Now().Add(-72*time.Hour).UTC().Format(time.RFC3339Nano), m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.ExecContext(ctx, "INSERT INTO text_context_entries(message_id,created_at) VALUES(?,?)", m.ID, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Prune(ctx, time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = database.QueryRow("SELECT count(*) FROM messages WHERE id=?", m.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("pruned message still present: %d %v", count, err)
+	}
+	if err = database.QueryRow("SELECT count(*) FROM text_context_entries WHERE message_id=?", m.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("orphaned context entry left: %d %v", count, err)
+	}
+}
+
 func TestSearchIsGroupScopedAndUsesFTS(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "search.db"))

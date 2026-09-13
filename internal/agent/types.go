@@ -14,11 +14,12 @@ type Client interface {
 }
 
 type Conversation struct {
-	RunID    string
-	Messages []conversation.Message
-	Now      time.Time
-	Timezone string
-	Mode     Mode
+	RunID         string
+	Messages      []conversation.Message
+	Now           time.Time
+	Timezone      string
+	Mode          Mode
+	SenderSummary string
 }
 
 type Mode string

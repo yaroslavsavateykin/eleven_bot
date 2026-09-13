@@ -391,6 +391,14 @@ func (s Service) Prune(ctx context.Context, before time.Time) error {
 	if err != nil {
 		return err
 	}
+	// Context markers reference messages; remove them first so the FK does not
+	// block the deletion of old history.
+	if _, err = tx.ExecContext(ctx, "DELETE FROM text_context_entries WHERE message_id IN (SELECT id FROM messages WHERE created_at < ?)", before.UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM image_context_entries WHERE message_id IN (SELECT id FROM messages WHERE created_at < ?)", before.UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM messages WHERE created_at < ?", before.UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}

@@ -442,18 +442,19 @@ func (s Service) downloadTelegramFile(ctx context.Context, b *bot.Bot, fileID st
 }
 
 func (s Service) dailyImageContext(ctx context.Context, b *bot.Bot) {
+	run := func() {
+		s.enrichImages(ctx, b)
+		s.enrichMessages(ctx)
+	}
+	run()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
 	for {
-		now := time.Now().In(s.Schedule.TZ)
-		next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 10, 0, 0, s.Schedule.TZ)
-		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
-			yesterday := time.Now().In(s.Schedule.TZ).AddDate(0, 0, -1)
-			s.enrichImages(ctx, b, yesterday)
-			s.enrichMessages(ctx, yesterday)
+		case <-ticker.C:
+			run()
 		}
 	}
 }
@@ -526,13 +527,12 @@ func latestGitHubTag(ctx context.Context, repository string) (string, error) {
 	return tags[0].Name, nil
 }
 
-func (s Service) enrichImages(ctx context.Context, b *bot.Bot, day time.Time) {
+func (s Service) enrichImages(ctx context.Context, b *bot.Bot) {
 	if s.AI.VisionModel == "" {
 		return
 	}
-	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, s.Schedule.TZ).UTC().Format(time.RFC3339Nano)
-	end := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, s.Schedule.TZ).UTC().Format(time.RFC3339Nano)
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,user_id,media_file_id,COALESCE(media_mime_type,'image/jpeg') FROM messages WHERE group_id=? AND sender_type='user' AND kind='photo' AND sent_at>=? AND sent_at<? AND media_file_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM image_context_entries e WHERE e.message_id=messages.id) ORDER BY sent_at", s.GroupID, start, end)
+	since := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,user_id,media_file_id,COALESCE(media_mime_type,'image/jpeg') FROM messages WHERE group_id=? AND sender_type='user' AND kind='photo' AND sent_at>=? AND media_file_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM image_context_entries e WHERE e.message_id=messages.id) ORDER BY sent_at", s.GroupID, since)
 	if err != nil {
 		slog.Error("daily image context query", "error", err)
 		return
@@ -569,8 +569,8 @@ func (s Service) enrichImages(ctx context.Context, b *bot.Bot, day time.Time) {
 		if len(notes) == 0 {
 			continue
 		}
-		note := limit(strings.Join(notes, " "), 900)
-		_, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-3000),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano))
+		note := limit(strings.Join(notes, " "), 300)
+		_, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-300),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			slog.Error("daily image context save", "error", err, "user_id", userID)
 			continue
@@ -583,15 +583,15 @@ func (s Service) enrichImages(ctx context.Context, b *bot.Bot, day time.Time) {
 	}
 }
 
-// enrichMessages summarizes each user's text messages into a short factual note
-// that is appended to their context (user_contexts.summary). Runs daily.
-func (s Service) enrichMessages(ctx context.Context, day time.Time) {
+// enrichMessages summarizes every text-bearing message (text and transcribed
+// voice) into a short factual note per user, capped at 300 chars. Runs hourly
+// over the unprocessed messages from the last 48 hours.
+func (s Service) enrichMessages(ctx context.Context) {
 	if s.AI.Key == "" || s.AI.Model == "" {
 		return
 	}
-	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, s.Schedule.TZ).UTC().Format(time.RFC3339Nano)
-	end := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, s.Schedule.TZ).UTC().Format(time.RFC3339Nano)
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,user_id,COALESCE(text,'') FROM messages WHERE group_id=? AND sender_type='user' AND kind='text' AND sent_at>=? AND sent_at<? AND text<>'' AND NOT EXISTS (SELECT 1 FROM text_context_entries e WHERE e.message_id=messages.id) ORDER BY sent_at", s.GroupID, start, end)
+	since := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,user_id,COALESCE(text,'') FROM messages WHERE group_id=? AND sender_type='user' AND COALESCE(text,'')<>'' AND sent_at>=? AND NOT EXISTS (SELECT 1 FROM text_context_entries e WHERE e.message_id=messages.id) ORDER BY sent_at", s.GroupID, since)
 	if err != nil {
 		slog.Error("daily text context query", "error", err)
 		return
@@ -623,8 +623,8 @@ func (s Service) enrichMessages(ctx context.Context, day time.Time) {
 		if err != nil || strings.TrimSpace(note) == "" {
 			continue
 		}
-		note = limit(strings.TrimSpace(note), 900)
-		if _, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-3000),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		note = limit(strings.TrimSpace(note), 300)
+		if _, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-300),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			slog.Error("daily text context save", "error", err, "user_id", userID)
 			continue
 		}
@@ -1216,7 +1216,7 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 	messages = s.withAuthorNames(ctx, messages)
 	botAgent := s.Agent
 	botAgent.Progress = func(text string) { s.updateThinking(ctx, b, chatID, text) }
-	result, err := botAgent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, current.TelegramMessageID), Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
+	result, err := botAgent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, current.TelegramMessageID), Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode, SenderSummary: s.senderSummary(ctx, current.UserID)})
 	if err != nil {
 		slog.Error("agent", "error", err)
 		text := agentErrorReply(err)
@@ -1232,6 +1232,18 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	s.send(ctx, b, chatID, limit(result.Reply, 1800))
+}
+
+// senderSummary returns the compact per-user context for the current sender.
+func (s Service) senderSummary(ctx context.Context, userID *int64) string {
+	if userID == nil {
+		return ""
+	}
+	var summary string
+	if err := s.DB.QueryRowContext(ctx, "SELECT COALESCE(summary,'') FROM user_contexts WHERE group_id=? AND user_id=?", s.GroupID, *userID).Scan(&summary); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(summary)
 }
 
 // withAuthorNames prefixes user messages with the speaker's first name so the
