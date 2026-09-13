@@ -450,7 +450,9 @@ func (s Service) dailyImageContext(ctx context.Context, b *bot.Bot) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			s.enrichImages(ctx, b, time.Now().In(s.Schedule.TZ).AddDate(0, 0, -1))
+			yesterday := time.Now().In(s.Schedule.TZ).AddDate(0, 0, -1)
+			s.enrichImages(ctx, b, yesterday)
+			s.enrichMessages(ctx, yesterday)
 		}
 	}
 }
@@ -579,6 +581,60 @@ func (s Service) enrichImages(ctx context.Context, b *bot.Bot, day time.Time) {
 		}
 	}
 }
+
+// enrichMessages summarizes each user's text messages into a short factual note
+// that is appended to their context (user_contexts.summary). Runs daily.
+func (s Service) enrichMessages(ctx context.Context, day time.Time) {
+	if s.AI.Key == "" || s.AI.Model == "" {
+		return
+	}
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, s.Schedule.TZ).UTC().Format(time.RFC3339Nano)
+	end := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, s.Schedule.TZ).UTC().Format(time.RFC3339Nano)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,user_id,COALESCE(text,'') FROM messages WHERE group_id=? AND sender_type='user' AND kind='text' AND sent_at>=? AND sent_at<? AND text<>'' AND NOT EXISTS (SELECT 1 FROM text_context_entries e WHERE e.message_id=messages.id) ORDER BY sent_at", s.GroupID, start, end)
+	if err != nil {
+		slog.Error("daily text context query", "error", err)
+		return
+	}
+	defer rows.Close()
+	type msg struct {
+		id     int64
+		userID int64
+		text   string
+	}
+	byUser := map[int64][]msg{}
+	for rows.Next() {
+		var m msg
+		if err := rows.Scan(&m.id, &m.userID, &m.text); err != nil {
+			return
+		}
+		byUser[m.userID] = append(byUser[m.userID], m)
+	}
+	for userID, msgs := range byUser {
+		var b strings.Builder
+		for _, m := range msgs {
+			b.WriteString(m.text)
+			b.WriteByte('\n')
+			if b.Len() > 4000 {
+				break
+			}
+		}
+		note, err := s.AI.Complete(ctx, prompts.MessageContextSystem, b.String())
+		if err != nil || strings.TrimSpace(note) == "" {
+			continue
+		}
+		note = limit(strings.TrimSpace(note), 900)
+		if _, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-3000),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			slog.Error("daily text context save", "error", err, "user_id", userID)
+			continue
+		}
+		for _, m := range msgs {
+			if _, err := s.DB.ExecContext(ctx, "INSERT OR IGNORE INTO text_context_entries(message_id,created_at) VALUES(?,?)", m.id, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				slog.Error("daily text context mark", "error", err, "message_id", m.id)
+			}
+		}
+	}
+}
+
 func command(text string) (string, string)             { return commandFor("", text) }
 func (s Service) command(text string) (string, string) { return commandFor(s.BotUsername, text) }
 func commandFor(username, text string) (string, string) {

@@ -11,3 +11,6 @@ var RoastSystem string
 
 //go:embed group_context.md
 var GroupContext string
+
+//go:embed message_context.md
+var MessageContextSystem string
