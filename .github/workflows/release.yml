@@ -1,67 +1,94 @@
-name: Verify and Publish Image
+name: Release
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v0.1.0"
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+concurrency:
+  group: release
+  cancel-in-progress: false
 
-      - uses: actions/setup-go@v5
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version must look like v0.1.0"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.27.x"
 
-      - run: go test ./...
-      - run: go vet ./...
+      - name: Test Go code
+        run: |
+          go test ./...
+          go vet ./...
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - run: node internal/web/static/app.test.mjs
+      - name: Test web code
+        run: node internal/web/static/app.test.mjs
 
-  publish:
-    needs: verify
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          # The package was initially published outside Actions, so the
-          # repository-scoped GITHUB_TOKEN has no package read permission.
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - id: meta
+      - name: Docker metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=raw,value=${{ inputs.version }}
+            type=semver,value=${{ inputs.version }},pattern={{version}}
+            type=semver,value=${{ inputs.version }},pattern={{major}}.{{minor}}
+            type=semver,value=${{ inputs.version }},pattern={{major}}
             type=raw,value=latest
             type=sha
 
-      - uses: docker/build-push-action@v6
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --target "${{ github.sha }}" \
+            --title "$VERSION" \
+            --generate-notes
