@@ -203,6 +203,9 @@ func (t ScheduleMutationTool) Description() string {
 	if t.Operation == "create_batch" {
 		return "Creates multiple independent schedule events in one server-side batch. Use for pasted lists such as birthdays; valid events are saved while duplicates or invalid rows are reported."
 	}
+	if t.Operation == "update_batch" {
+		return "Updates multiple existing schedule events in one server-side batch. Use after schedule_query when the same change applies to every found record."
+	}
 	return "Safely " + t.Operation + " a schedule event through server-side validation."
 }
 func (t ScheduleMutationTool) Schema() json.RawMessage {
@@ -211,6 +214,9 @@ func (t ScheduleMutationTool) Schema() json.RawMessage {
 	}
 	if t.Operation == "update" {
 		return json.RawMessage(`{"type":"object","required":["target_id","changes"],"properties":{"target_id":{"type":"integer"},"changes":{"type":"object","properties":{"title":{"type":"string"},"starts_at":{"type":"string","description":"RFC3339"},"ends_at":{"type":"string","description":"RFC3339"},"location":{"type":["string","null"]},"description":{"type":["string","null"]},"all_day":{"type":"boolean"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}`)
+	}
+	if t.Operation == "update_batch" {
+		return json.RawMessage(`{"type":"object","required":["updates"],"properties":{"updates":{"type":"array","minItems":1,"items":{"type":"object","required":["target_id","changes"],"properties":{"target_id":{"type":"integer"},"changes":{"type":"object","properties":{"title":{"type":"string"},"starts_at":{"type":"string"},"ends_at":{"type":"string"},"location":{"type":["string","null"]},"description":{"type":["string","null"]},"all_day":{"type":"boolean"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"additionalProperties":false}}},"additionalProperties":false}`)
 	}
 	if t.Operation == "create_batch" {
 		return json.RawMessage(`{"type":"object","required":["events"],"properties":{"events":{"type":"array","minItems":1,"items":{"type":"object","required":["kind","title","starts_at","ends_at","timezone"],"properties":{"kind":{"type":"string","enum":["lesson","deadline","event","note","other","birthday"]},"category":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"location":{"type":["string","null"]},"starts_at":{"type":"string"},"ends_at":{"type":["string","null"]},"timezone":{"type":"string"},"all_day":{"type":"boolean"},"recurrence":{"type":["object","null"],"properties":{"frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},"interval":{"type":"integer"},"weekdays":{"type":"array","items":{"type":"string","enum":["MO","TU","WE","TH","FR","SA","SU"]}},"count":{"type":["integer","null"]},"until":{"type":["string","null"]}},"additionalProperties":false},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}},"additionalProperties":false}`)
@@ -232,6 +238,9 @@ func (t ScheduleMutationTool) Execute(ctx context.Context, raw json.RawMessage) 
 	}
 	if t.Operation == "create_batch" {
 		return t.createBatch(ctx, raw)
+	}
+	if t.Operation == "update_batch" {
+		return t.updateBatch(ctx, raw)
 	}
 	var args struct {
 		TargetID int64      `json:"target_id"`
@@ -279,24 +288,34 @@ func (t ScheduleMutationTool) createBatch(ctx context.Context, raw json.RawMessa
 }
 
 func (t ScheduleMutationTool) update(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
-	var args struct {
-		TargetID int64 `json:"target_id"`
-		Changes  struct {
-			Title       *string    `json:"title"`
-			StartsAt    *time.Time `json:"starts_at"`
-			EndsAt      *time.Time `json:"ends_at"`
-			Location    **string   `json:"location"`
-			Description **string   `json:"description"`
-			AllDay      *bool      `json:"all_day"`
-			Tags        *[]string  `json:"tags"`
-		} `json:"changes"`
-	}
+	var args updateInput
 	if err := decode(raw, &args); err != nil || args.TargetID <= 0 {
 		return ToolResult{}, fmt.Errorf("invalid update arguments")
 	}
+	proposal, err := t.updateProposal(ctx, args)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	return t.applyProposal(ctx, proposal)
+}
+
+type updateInput struct {
+	TargetID int64 `json:"target_id"`
+	Changes  struct {
+		Title       *string    `json:"title"`
+		StartsAt    *time.Time `json:"starts_at"`
+		EndsAt      *time.Time `json:"ends_at"`
+		Location    **string   `json:"location"`
+		Description **string   `json:"description"`
+		AllDay      *bool      `json:"all_day"`
+		Tags        *[]string  `json:"tags"`
+	} `json:"changes"`
+}
+
+func (t ScheduleMutationTool) updateProposal(ctx context.Context, args updateInput) (schedule.Proposal, error) {
 	current := t.Schedule.Get(ctx, args.TargetID)
 	if current.ID == 0 || current.Status != "active" {
-		return ToolResult{}, fmt.Errorf("active event not found")
+		return schedule.Proposal{}, fmt.Errorf("active event not found")
 	}
 	updated := current
 	if args.Changes.Title != nil {
@@ -320,7 +339,33 @@ func (t ScheduleMutationTool) update(ctx context.Context, raw json.RawMessage) (
 	if args.Changes.Tags != nil {
 		updated.Tags = *args.Changes.Tags
 	}
-	return t.applyProposal(ctx, schedule.Proposal{Operation: "update", Event: updated, Before: schedule.Snapshot(current), Announce: t.Announce})
+	return schedule.Proposal{Operation: "update", Event: updated, Before: schedule.Snapshot(current), Announce: t.Announce}, nil
+}
+
+func (t ScheduleMutationTool) updateBatch(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	var args struct {
+		Updates []updateInput `json:"updates"`
+	}
+	if err := decode(raw, &args); err != nil || len(args.Updates) == 0 {
+		return ToolResult{}, fmt.Errorf("invalid batch updates")
+	}
+	proposals := make([]schedule.Proposal, 0, len(args.Updates))
+	for _, update := range args.Updates {
+		proposal, err := t.updateProposal(ctx, update)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		proposals = append(proposals, proposal)
+	}
+	result, err := t.Schedule.ApplyImport(ctx, proposals, 0, 0)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	data, err := json.Marshal(struct {
+		Updated []schedule.Event            `json:"updated"`
+		Skipped []schedule.SkippedOperation `json:"skipped,omitempty"`
+	}{Updated: result.Events, Skipped: result.Skipped})
+	return ToolResult{Content: string(data)}, err
 }
 func (t ScheduleMutationTool) apply(ctx context.Context, current schedule.Event) (ToolResult, error) {
 	if current.ID == 0 || current.Status != "active" {

@@ -61,6 +61,44 @@ func TestWriteToolsAreNotAvailableInGroupMode(t *testing.T) {
 	}
 }
 
+func TestScheduleUpdateBatchPreservesBirthdayRecurrence(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-update-batch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}
+	start := time.Date(2005, 5, 3, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 1)
+	first, _, err := svc.Create(ctx, schedule.Event{GroupID: 1, Kind: "birthday", Category: "other", Title: "День рождения: Анна Ивановна", StartsAt: start, EndsAt: &end, Timezone: "UTC", AllDay: true, RRule: stringPtr("FREQ=YEARLY")}, "test", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStart := start.AddDate(0, 1, 0)
+	secondEnd := secondStart.AddDate(0, 0, 1)
+	second, _, err := svc.Create(ctx, schedule.Event{GroupID: 1, Kind: "birthday", Category: "other", Title: "День рождения: Борис Петрович", StartsAt: secondStart, EndsAt: &secondEnd, Timezone: "UTC", AllDay: true, RRule: stringPtr("FREQ=YEARLY")}, "test", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ScheduleMutationTool{Schedule: svc, Operation: "update_batch"}
+	raw := json.RawMessage(fmt.Sprintf(`{"updates":[{"target_id":%d,"changes":{"title":"День рождения: Анна"}},{"target_id":%d,"changes":{"title":"День рождения: Борис"}}]}`, first.ID, second.ID))
+	if _, err = tool.Execute(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{first.ID, second.ID} {
+		updated := svc.Get(ctx, id)
+		if updated.RRule == nil || !strings.Contains(*updated.RRule, "FREQ=YEARLY") || strings.Contains(updated.Title, "Ивановна") || strings.Contains(updated.Title, "Петрович") {
+			t.Fatalf("updated=%#v", updated)
+		}
+	}
+}
+
+func stringPtr(value string) *string { return &value }
+
 func TestAgentDoesNotRepeatIdenticalToolCall(t *testing.T) {
 	tool := &fakeTool{name: "schedule_query"}
 	client := &fakeClient{answers: []string{

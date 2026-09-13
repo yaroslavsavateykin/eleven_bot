@@ -177,6 +177,35 @@ func (s Service) UpdateBotText(ctx context.Context, chatID int64, telegramID int
 	return nil
 }
 
+// Recent returns the latest conversation context in chronological order.
+// Provisional thinking messages are transport feedback, not user context.
+func (s Service) Recent(ctx context.Context, chatID int64, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,group_id,telegram_chat_id,telegram_message_id,sender_type,user_id,kind,COALESCE(text,''),media_group_id,media_file_id,media_mime_type,reply_to_telegram_message_id,reply_to_message_id,sent_at,created_at FROM messages WHERE telegram_chat_id=? AND text<>'Думаю…' ORDER BY id DESC LIMIT ?`, chatID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var reversed []Message
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		reversed = append(reversed, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	messages := make([]Message, len(reversed))
+	for i := range reversed {
+		messages[len(reversed)-1-i] = reversed[i]
+	}
+	return messages, nil
+}
+
 func (s Service) BuildReplyChain(ctx context.Context, messageID int64) ([]Message, error) {
 	depth, chars := s.MaxDepth, s.MaxChars
 	if depth <= 0 {

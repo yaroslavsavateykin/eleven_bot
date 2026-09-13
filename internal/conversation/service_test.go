@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,6 +83,32 @@ func TestReplyChainPersistsBothSendersAndHandlesDuplicates(t *testing.T) {
 	}
 	if len(chain) != 5 || chain[0].ID != u1.ID || chain[1].ID != b1.ID || chain[2].ID != u2.ID || chain[3].ID != b2.ID || chain[4].ID != u3.ID {
 		t.Fatalf("unexpected chain: %#v", chain)
+	}
+}
+
+func TestRecentReturnsLastTenMessagesChronologically(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "recent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','',''); INSERT INTO users(id,telegram_user_id,created_at,updated_at) VALUES(1,1,'','')`); err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: database}
+	now := time.Now().UTC()
+	for i := 1; i <= 12; i++ {
+		if _, _, err = s.Ingest(ctx, Incoming{GroupID: 1, TelegramChatID: -1, TelegramMessageID: i, UserID: 1, Kind: "text", Text: fmt.Sprintf("m%d", i), SentAt: now.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err = s.StoreBot(ctx, BotMessage{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 13, Kind: "text", Text: "Думаю…", SentAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := s.Recent(ctx, -1, 10)
+	if err != nil || len(messages) != 10 || messages[0].Text != "m3" || messages[9].Text != "m12" {
+		t.Fatalf("messages=%#v err=%v", messages, err)
 	}
 }
 

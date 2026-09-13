@@ -976,7 +976,13 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	messages := []conversation.Message{{SenderType: conversation.SenderUser, Text: current.Text}}
-	if current.ID != 0 {
+	if mode == agent.ModeAdminPrivate {
+		if recent, err := s.conversations().Recent(ctx, chatID, 10); err != nil {
+			slog.Error("private conversation context failed", "error", err)
+		} else if len(recent) > 0 {
+			messages = recent
+		}
+	} else if current.ID != 0 {
 		if chain, err := s.conversations().BuildReplyChain(ctx, current.ID); err == nil && len(chain) > 0 {
 			messages = chain
 		}
