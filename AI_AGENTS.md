@@ -49,10 +49,10 @@
 ## Docker, секреты и релизы
 
 - Не включайте `.env`, `.env.*`, SQLite data или `.git` в Docker image. Проверьте `.dockerignore` перед publication.
-- Каждый publish получает новый immutable semver-like tag: `v0.0.4`, `v0.0.5` и т. д. `latest` может быть дополнительным указателем, но production deploy должен использовать конкретный tag.
+- Каждый publish получает новый immutable semver-like tag (`v0.0.5`, `v0.0.6`, …) для истории и rollback. Дополнительно образ публикуется под мутабельным `latest`.
+- Для server deploy используется тег `latest`: на сервере compose закреплён `:latest`, а watchtower (`--label-enable --interval 900`) автоматически подхватывает новый digest и пересоздаёт контейнер. Ручной rollback — переключить `image:` на конкретный versioned tag и `docker compose up -d`. После любого деплоя проверять `/healthz`, `docker compose ps` и последние логи.
 - Не публикуйте секреты из `.env` в логи, docs, git или image layers.
 - Контейнер работает как nonroot UID `65532`; Docker volume `/data` должен быть доступен этому UID.
-- Для server deploy сначала pull versioned tag, затем recreate container, после чего проверить `/healthz`, `docker compose ps` и последние логи.
 - В production `TELEGRAM_DISCOVERY_MODE=false`. Numeric `TELEGRAM_GROUP_CHAT_ID` получают только временно через `/chatid` в discovery mode, затем сервис перезапускают.
 
 ## Минимальная проверка

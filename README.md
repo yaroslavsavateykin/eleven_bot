@@ -172,18 +172,18 @@ curl http://127.0.0.1:6767/healthz
 
 ## Запуск готового образа
 
-Образы публикуются в GitHub Container Registry с неизменяемыми тегами:
+Образы публикуются в GitHub Container Registry. Каждый release получает неизменяемый тег (`v0.0.31` и т. д.), а также мутабельный `latest`, который используется для обычного обновления сервера:
 
 ```text
-ghcr.io/yaroslavsavateykin/eleven_bot:v0.0.3
+ghcr.io/yaroslavsavateykin/eleven_bot:latest
 ```
 
-Используйте конкретный тег в production compose, а не плавающий `latest`:
+На сервере compose закреплён `:latest`, и watchtower (`--label-enable`) автоматически подхватывает новый digest. Для ручного обновления или отката используйте конкретный тег:
 
 ```yaml
 services:
   eleven-bot:
-    image: ghcr.io/yaroslavsavateykin/eleven_bot:v0.0.3
+    image: ghcr.io/yaroslavsavateykin/eleven_bot:latest
     pull_policy: always
     env_file: .env
     volumes:
@@ -202,6 +202,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
 
 volumes:
   eleven_bot_data:
