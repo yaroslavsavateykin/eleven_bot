@@ -377,4 +377,4 @@ go vet ./...
 go run ./cmd/app
 ```
 
-Внутренняя архитектура описана в [docs/architecture.md](docs/architecture.md), правила для AI-агентов — в [AI_AGENTS.md](AI_AGENTS.md).
+Внутренняя архитектура описана в [docs/architecture.md](docs/architecture.md), правила для AI-агентов — в [AGENTS.md](AGENTS.md).
