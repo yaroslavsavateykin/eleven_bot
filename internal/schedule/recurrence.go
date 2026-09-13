@@ -79,3 +79,14 @@ func SameSemanticEvent(left, right Event) bool {
 func sameEventEnd(left, right *time.Time) bool {
 	return left == nil && right == nil || left != nil && right != nil && left.Equal(*right)
 }
+
+func rruleParts(rule string) map[string]string {
+	parts := make(map[string]string)
+	for _, part := range strings.Split(rule, ";") {
+		key, value, ok := strings.Cut(part, "=")
+		if ok {
+			parts[key] = value
+		}
+	}
+	return parts
+}

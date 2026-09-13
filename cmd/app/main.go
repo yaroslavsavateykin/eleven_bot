@@ -68,23 +68,20 @@ func main() {
 		slog.Error("group lookup", "error", err)
 		os.Exit(1)
 	}
-	weekStart, _ := time.ParseInLocation("2006-01-02", c.AcademicReferenceWeekStart, loc)
-	weekParity := schedule.WeekParityConfig{ReferenceWeekStart: weekStart, ReferenceParity: c.AcademicReferenceWeekParity}
 	semester := schedule.Semester{Start: c.Semester.Start, End: c.Semester.End}
-	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc, WeekParity: weekParity, Semester: semester}
+	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc, Semester: semester}
 	conversationService := conversation.Service{DB: d, MaxDepth: 16, MaxChars: 3000}
-	aiClient := ai.Service{BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel, WeekParity: weekParity, Semester: semester}
+	aiClient := ai.Service{BaseURL: c.AIBaseURL, Key: c.AIKey, Model: c.AITextModel, VisionModel: c.AIVisionModel, STTModel: c.AISTTModel}
 	botAgent := agent.Agent{
 		Client: aiClient,
 		Tools: []agent.Tool{
-			agent.ScheduleTodayTool{Schedule: s},
-			agent.ScheduleStatusTool{Schedule: s},
-			agent.ScheduleSearchTool{Schedule: s},
+			agent.ScheduleQueryTool{Schedule: s},
+			agent.GroupSearchTool{Conversation: conversationService, GroupID: groupID},
 		},
 		AdminTools: []agent.Tool{
-			agent.EventOperationTool{Schedule: s, Operation: "create"},
-			agent.EventOperationTool{Schedule: s, Operation: "update"},
-			agent.EventOperationTool{Schedule: s, Operation: "cancel"},
+			agent.ScheduleMutationTool{Schedule: s, Operation: "create", Announce: true},
+			agent.ScheduleMutationTool{Schedule: s, Operation: "update", Announce: true},
+			agent.ScheduleMutationTool{Schedule: s, Operation: "cancel", Announce: true},
 		},
 		MaxRounds: 4,
 	}

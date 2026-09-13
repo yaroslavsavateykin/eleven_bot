@@ -9,6 +9,34 @@ import (
 	"group411/internal/db"
 )
 
+func TestSearchIsGroupScopedAndUsesFTS(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, query := range []string{
+		`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'one',-1,'UTC','one','',''),(2,'two',-2,'UTC','two','','')`,
+		`INSERT INTO users(id,telegram_user_id,first_name,created_at,updated_at) VALUES(1,1,'Аня','','')`,
+	} {
+		if _, err := database.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := Service{DB: database}
+	if _, _, err := s.Ingest(ctx, Incoming{GroupID: 1, TelegramChatID: -1, TelegramMessageID: 1, UserID: 1, Kind: "text", Text: "По физхимии задали отчёт", SentAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Ingest(ctx, Incoming{GroupID: 2, TelegramChatID: -2, TelegramMessageID: 1, UserID: 1, Kind: "text", Text: "По физхимии другой отчёт", SentAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Search(ctx, 1, "физхимии отчёт", nil, nil, 10)
+	if err != nil || len(got) != 1 || got[0].Text != "По физхимии задали отчёт" || got[0].Author != "Аня" {
+		t.Fatalf("results=%#v err=%v", got, err)
+	}
+}
+
 func TestReplyChainPersistsBothSendersAndHandlesDuplicates(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "graph.db"))

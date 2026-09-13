@@ -34,11 +34,10 @@ type Event struct {
 	RecurrenceHorizon string     `json:"-"`
 }
 type Service struct {
-	DB         *sql.DB
-	GroupID    int64
-	TZ         *time.Location
-	WeekParity WeekParityConfig
-	Semester   Semester
+	DB       *sql.DB
+	GroupID  int64
+	TZ       *time.Location
+	Semester Semester
 }
 
 const DefaultRecurrenceHorizonWeeks = 16
@@ -57,42 +56,6 @@ func (s Semester) Contains(at time.Time, loc *time.Location) bool {
 	start := time.Date(s.Start.In(loc).Year(), s.Start.In(loc).Month(), s.Start.In(loc).Day(), 0, 0, 0, 0, loc)
 	end := time.Date(s.End.In(loc).Year(), s.End.In(loc).Month(), s.End.In(loc).Day(), 23, 59, 59, 0, loc)
 	return !local.Before(start) && !local.After(end)
-}
-
-// WeekParityConfig defines academic, not ISO-calendar, week parity.
-type WeekParityConfig struct {
-	ReferenceWeekStart time.Time
-	ReferenceParity    string
-}
-
-func (c WeekParityConfig) Configured() bool {
-	return !c.ReferenceWeekStart.IsZero() && (c.ReferenceParity == "even" || c.ReferenceParity == "odd")
-}
-
-func (s Service) AcademicWeekParity(at time.Time) (string, error) {
-	if !s.WeekParity.Configured() {
-		return "", fmt.Errorf("Не настроено, какая учебная неделя считается чётной. Укажите одну известную чётную или нечётную неделю.")
-	}
-	loc := s.TZ
-	if loc == nil {
-		loc = time.UTC
-	}
-	local := at.In(loc)
-	weekStart := time.Date(local.Year(), local.Month(), local.Day()-int((local.Weekday()+6)%7), 0, 0, 0, 0, loc)
-	ref := s.WeekParity.ReferenceWeekStart.In(loc)
-	ref = time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, loc)
-	// Compare calendar dates in UTC so daylight-saving transitions cannot alter
-	// the count of academic weeks.
-	weekDate := time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, time.UTC)
-	refDate := time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, time.UTC)
-	weeks := int(weekDate.Sub(refDate).Hours() / (7 * 24))
-	if weeks%2 == 0 {
-		return s.WeekParity.ReferenceParity, nil
-	}
-	if s.WeekParity.ReferenceParity == "even" {
-		return "odd", nil
-	}
-	return "even", nil
 }
 
 func Canonical(e Event) string {

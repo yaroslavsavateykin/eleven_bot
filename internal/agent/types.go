@@ -29,6 +29,7 @@ type Mode string
 
 const (
 	ModeGroup        Mode = "group"
+	ModeGroupWrite   Mode = "group_write"
 	ModeAdminPrivate Mode = "admin_private"
 )
 

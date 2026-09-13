@@ -1,13 +1,14 @@
 # Бот-помощник учебной группы
 
-Telegram-бот для расписания учебной группы. Хранит расписание в SQLite, отвечает на вопросы, принимает изменения через `/event` и продолжает разговор по reply-цепочкам.
+Небольшой агент учебной группы в Telegram. Он отвечает на учебные вопросы сам, а для расписания и истории группы вызывает безопасные tools поверх SQLite.
 
 Бот не использует имя как часть личности. Технические display name и username Telegram-аккаунта не влияют на ответы.
 
 ## Возможности
 
 - Расписание, разовые события, пары, дедлайны и повторяющиеся занятия.
-- Изменение расписания через `/event` и естественный язык в приватном чате администратора.
+- Единый диалог для учебных вопросов, расписания, изменений и поиска по истории группы.
+- Поиск по сохранённым сообщениям группы для вопросов о домашних заданиях, отчётах и объявлениях.
 - Дедлайн с датой без времени сохраняется как событие на весь день.
 - Пересечения не блокируют сохранение: событие добавляется, а бот сообщает о конфликте в ответе.
 - `/today`, `/week`, `/ask`, `/roast`, `/all`, `/help`.
@@ -132,10 +133,6 @@ AI_TEXT_MODEL=...
 AI_VISION_MODEL=...
 AI_STT_MODEL=
 
-# Учебная неделя, если используется чётность
-ACADEMIC_REFERENCE_WEEK_START=2026-09-07
-ACADEMIC_REFERENCE_WEEK_PARITY=odd
-
 # Необязательно: проверка новых GitHub tags
 GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
 ```
@@ -152,6 +149,7 @@ GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
 | `HTTP_ADDR` | Адрес, на котором слушает приложение. По умолчанию `:6767`. |
 | `DATABASE_PATH` | Путь SQLite. В Docker используется `/data/app.db`. |
 | `AI_BASE_URL`, `AI_API_KEY`, `AI_TEXT_MODEL` | Параметры OpenAI-compatible endpoint. |
+| `AI_STT_MODEL` | Необязательная модель распознавания голосовых сообщений. Если пусто, бот попросит отправить текстом. |
 
 ## Запуск через Docker Compose
 
@@ -229,14 +227,15 @@ volumes:
 ## Архитектура
 
 ```text
-Telegram -> conversation graph -> router -> agent/tools or event parser -> schedule -> SQLite
+Telegram -> Conversation Service -> Agent -> safe tools -> domain services -> SQLite
 ```
 
 - `internal/conversation` хранит входящие и bot-сообщения, reply relation и bounded context.
-- `internal/telegram` определяет trigger, отправляет `Думаю…`, редактирует его в итог и сохраняет ответы.
-- `internal/agent` запускает ограниченный tool-calling agent.
-- `internal/ai` связывается с OpenAI-compatible endpoint и валидирует JSON операций.
-- `internal/schedule` нормализует recurrence, проверяет целостность и применяет изменения транзакционно.
+- `internal/telegram` занимается авторизацией, Telegram metadata, ingestion, trigger policy и доставкой ответа. Он не понимает смысл текста.
+- `internal/conversation` хранит message graph, строит bounded reply context и выполняет group FTS search.
+- `internal/agent` запускает ограниченный tool-calling loop с `schedule_query`, `schedule_create`, `schedule_update`, `schedule_cancel`, `group_search`.
+- `internal/ai` является OpenAI-compatible transport для текста, vision и speech.
+- `internal/schedule` нормализует typed recurrence, компилирует её в RRULE, проверяет целостность и применяет изменения транзакционно.
 - `internal/db/migrations` содержит единственный источник миграций.
 - `prompts` содержит встраиваемые промпты.
 

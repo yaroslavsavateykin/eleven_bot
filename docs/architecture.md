@@ -7,12 +7,12 @@ flowchart TD
     TG[Telegram update] --> CLAIM[Receipt claim: token + lease]
     CLAIM --> ING[Conversation ingestion transaction]
     ING --> DB[(SQLite message graph)]
-    ING --> ROUTE[Telegram routing]
+    ING --> ROUTE[Transport trigger policy]
     ROUTE --> CONV[Reply-chain context]
     CONV --> AGENT[Bounded Agent]
     AGENT --> LLM[OpenAI-compatible client]
-    AGENT --> TOOLS[Whitelisted tools]
-    TOOLS --> SCH[Schedule Service]
+    AGENT --> TOOLS[schedule_query/create/update/cancel, group_search]
+    TOOLS --> SCH[Domain services]
     SCH --> DB
     AGENT --> FIN[Owner-checked receipt finalization]
     FIN --> SEND[Telegram sender]
@@ -27,11 +27,11 @@ flowchart TD
 
 ## Layers
 
-- `internal/telegram` is transport: update authorization, command parsing, rendering, and sending Telegram messages.
+- `internal/telegram` is transport: update authorization, command parsing, reply graph metadata, rendering, and sending Telegram messages. It does not classify user intent.
 - `internal/conversation` is the source of truth for incoming and bot messages, reply edges, duplicate delivery handling, retention-safe pruning, and bounded context loading.
 - `internal/agent` is a small bounded loop. It can call only registered tools and never receives a database handle.
-- `internal/ai` is an OpenAI-compatible HTTP transport plus strict event-operation decoding.
-- `internal/schedule` owns validation, snapshots, transactions, recurrence checks, conflicts, source records, and changelog writes.
+- `internal/ai` is an OpenAI-compatible HTTP, vision, and speech transport.
+- `internal/schedule` owns validation, snapshots, transactions, recurrence checks, conflicts, source records, and changelog writes. Recurrence is a typed `RecurrenceSpec` at tool boundaries and is deterministically compiled to RRULE; events do not store academic-week parity.
 
 ## Message Graph And Retention
 
@@ -41,13 +41,13 @@ Every accepted user message and every successfully sent bot message is persisted
 
 ## Routing And Conversation
 
-The bot reacts to commands, replies to a persisted bot message, and no other ordinary group messages. An authorized private administrator can additionally ask ordinary questions and describe schedule mutations without `/event`; those mutations use the same structured parser and Schedule transaction as group commands. Private mutations are applied immediately but get a separate pending announcement record. `/sync preview` renders those records privately; `/sync` sends a group digest first and deletes the pending records only after Telegram confirms delivery. A process-local mutex prevents concurrent sync calls from normally duplicating a digest. `pending_intents` remains legacy storage only and is no longer in the conversational path.
+The bot reacts to commands, replies to a persisted bot message, and no other ordinary group messages. Every activated natural-language message reaches the same Agent. An authorized private administrator receives mutation tools; ordinary group conversation receives read tools and explicit `/event` receives the write capability. Private mutations are applied immediately but get a separate pending announcement record. `/sync preview` renders those records privately; `/sync` sends a group digest first and deletes the pending records only after Telegram confirms delivery. A process-local mutex prevents concurrent sync calls from normally duplicating a digest.
 
 ## Agent And Tools
 
 The agent accepts embedded system instructions, the reply chain, current time and timezone, and tool definitions. It may make one tool call per turn for at most four turns. Unknown tools, malformed responses, tool errors, and exhausted rounds fail closed.
 
-Currently registered tools are `schedule_today` and `schedule_status`. New schedule mutation tools must construct a `schedule.Proposal` and call `schedule.Apply` or `schedule.ApplyAll`; they must not write SQLite directly.
+Registered tools are `schedule_query`, `schedule_create`, `schedule_update`, `schedule_cancel`, and `group_search`. Mutation tools server-resolve targets, snapshots, validation, and persistence through `schedule.Service`; they never write SQLite directly.
 
 ## Event Safety
 

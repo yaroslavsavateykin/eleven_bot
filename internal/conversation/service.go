@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+type SearchResult struct {
+	MessageID int64     `json:"message_id"`
+	Date      time.Time `json:"date"`
+	Author    string    `json:"author"`
+	Text      string    `json:"text"`
+}
+
 type Service struct {
 	DB       *sql.DB
 	MaxDepth int
@@ -332,4 +339,61 @@ func (s Service) Prune(ctx context.Context, before time.Time) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// Search returns group-scoped user messages. The query is converted to a
+// literal prefix query so user text cannot change the FTS expression grammar.
+func (s Service) Search(ctx context.Context, groupID int64, query string, from, to *time.Time, limit int) ([]SearchResult, error) {
+	terms := strings.Fields(strings.ToLower(query))
+	if len(terms) == 0 {
+		return nil, fmt.Errorf("search query is required")
+	}
+	if len(terms) > 8 {
+		terms = terms[:8]
+	}
+	for i, term := range terms {
+		term = strings.Map(func(r rune) rune {
+			if r == '_' || r == '-' || r == '\'' || r == '"' || r == '*' || r == ':' || r == '(' || r == ')' {
+				return -1
+			}
+			return r
+		}, term)
+		if term == "" {
+			return nil, fmt.Errorf("search query has no words")
+		}
+		terms[i] = `"` + term + `"*`
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	args := []any{strings.Join(terms, " AND "), groupID}
+	where := "WHERE f.text MATCH ? AND m.group_id=? AND m.sender_type='user'"
+	if from != nil {
+		where += " AND m.sent_at>=?"
+		args = append(args, from.UTC().Format(time.RFC3339Nano))
+	}
+	if to != nil {
+		where += " AND m.sent_at<?"
+		args = append(args, to.UTC().Format(time.RFC3339Nano))
+	}
+	args = append(args, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT m.id,m.sent_at,COALESCE(u.first_name,u.username,'участник'),m.text FROM messages_fts f JOIN messages m ON m.id=f.rowid LEFT JOIN users u ON u.id=m.user_id `+where+` ORDER BY bm25(messages_fts),m.sent_at DESC,m.id DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SearchResult
+	for rows.Next() {
+		var result SearchResult
+		var sent string
+		if err := rows.Scan(&result.MessageID, &sent, &result.Author, &result.Text); err != nil {
+			return nil, err
+		}
+		result.Date, err = time.Parse(time.RFC3339Nano, sent)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, result)
+	}
+	return out, rows.Err()
 }

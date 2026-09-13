@@ -13,15 +13,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"group411/internal/schedule"
 )
 
 type Service struct {
 	BaseURL, Key, Model, VisionModel, STTModel string
 	Client                                     *http.Client
-	WeekParity                                 schedule.WeekParityConfig
-	Semester                                   schedule.Semester
 }
 
 // Transcribe converts a Telegram voice recording to text before normal routing.

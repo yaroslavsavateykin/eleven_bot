@@ -11,10 +11,10 @@
 1. В public group бот реагирует только на slash command, explicit mention или direct reply на сообщение configured bot account.
 2. Direct reply на бот всегда обрабатывается. Наличие parent в SQLite обогащает контекст, но не должно быть единственной причиной activation.
 3. Все успешные Telegram sends должны сохраняться в `messages` как `sender_type=bot` с reply relation, если он существует.
-4. Reply chain является контекстом, а не immutable mode lock. Явный новый intent в текущем сообщении может перебить старый flow.
+4. Reply chain является контекстом, а semantic intent всегда определяет Agent, а не Telegram или substring/regex router.
 5. История для agent хранит user и assistant сообщения в chronological order; она bounded со старого края, но сохраняет immediate parent и current user message.
-6. Structured event clarification понимает короткие ответы через root/context: `да`, `нет`, `вторую`, `#1`, `на 16:30`.
-7. Явная операция `добавь`, `перенеси`, `измени`, `переименуй`, `удали`, `отмени` не должна превращаться в generic conversation.
+6. Короткие уточнения (`да`, `нет`, `вторую`, `на 16:30`) передаются Agent вместе с reply context.
+7. Telegram не классифицирует `добавь`, `перенеси`, `измени`, `удали` и другие пользовательские формулировки.
 8. Дедлайн с датой без времени является all-day event. All-day событие на текущую дату допустимо весь день.
 9. Временные пересечения не блокируют сохранение. Событие сохраняется, а итоговый ответ сообщает `Пересекается с`.
 10. Переименование является `update` target event. При схождении с точным existing duplicate корректно объединить записи, а не создавать новую и не выводить SQL error.
@@ -31,8 +31,8 @@
 
 ## Работа с расписанием
 
-- Обычный `/event`: используйте `schedule.ApplyAll`, операция атомарна.
-- Admin private import: используйте `ApplyImport`, независимые хорошие факты сохраняются, плохие возвращаются в `Skipped` с короткой причиной.
+- Agent mutation tools вызывают `schedule.Service`; model никогда не пишет в SQLite и update/cancel всегда server-resolve target snapshot.
+- `RecurrenceSpec` является typed semantic contract; deterministic compiler создаёт RRULE. Не вводите parity как поле Event или Proposal.
 - Не меняйте recurrence или dedupe без тестов: generated `UNTIL` не является semantic identity.
 - User-facing summary должна сообщать recurrence человеческим языком, без `FREQ=` и без generated `UNTIL`.
 - Dedupe и SQL uniqueness должны обрабатываться до отображения пользователю.
@@ -40,8 +40,9 @@
 ## AI и лимиты
 
 - AI не получает SQL, shell или произвольный доступ к внутренним сервисам.
-- Agent использует только зарегистрированные tools. Чётность недели не является отдельным tool: reference week передаётся event parser в system context.
-- `schedule_search` может быть большим. Любое добавление tool result в prompt обязано соблюдать prompt budget. Не возвращайте `AI prompt too long` на обычный вопрос о расписании.
+- Agent использует только зарегистрированные tools. `schedule_query` и `group_search` возвращают компактные group-scoped данные.
+- Любое добавление tool result в prompt обязано соблюдать prompt budget. Не возвращайте `AI prompt too long` на обычный вопрос о расписании.
+- Не показывайте пользователю смешанный gateway output: если provider дописывает JSON после обычного текста, извлекайте `reply`, а не отправляйте protocol envelope с `tool_calls`.
 - Prompts находятся в `prompts/*.md`, встраиваются через `go:embed` и требуют тестов при изменении поведения.
 
 ## Docker, секреты и релизы

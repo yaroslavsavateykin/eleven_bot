@@ -37,12 +37,13 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 	}
 	prompt := renderConversation(input, definitions)
 	system := prompts.AgentSystem
+	system += "\n\nКонтекст конкретной учебной группы:\n" + prompts.GroupContext
 	if input.Mode == ModeAdminPrivate {
-		system += "\n\nТы работаешь в приватном административном чате авторизованного администратора. Сам анализируй смысл текущего сообщения: для обычной беседы верни reply, для чтения расписания вызови read tool, для создания, изменения или отмены события вызови подходящий event tool с полной structured proposal. Изменения применяются сразу к общей группе, но не публикуются в группе автоматически; для публикации используется /sync."
+		system += "\n\nЭто приватный административный чат. Изменения расписания применяются сразу и попадают в очередь /sync."
 	}
-	if needsGroupContext(input) {
-		system += "\n\nКонтекст конкретной учебной группы:\n" + prompts.GroupContext
-	}
+	// A repeated read with the same arguments cannot reveal new facts during one
+	// request. Stop the model from spending every round on the same lookup.
+	called := make(map[string]struct{})
 	for round := 0; round < rounds; round++ {
 		raw, err := completeAgentJSON(ctx, a.Client, system, prompt)
 		if err != nil {
@@ -88,6 +89,13 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			slog.Warn("unknown agent tool", "tool", call.Name)
 			return Result{}, fmt.Errorf("unknown tool")
 		}
+		callKey := call.Name + "\x00" + string(call.Arguments)
+		if _, seen := called[callKey]; seen {
+			slog.Warn("agent repeated tool call", "tool", call.Name)
+			prompt = appendToolResult(prompt, call.Name, "Этот вызов уже был выполнен с теми же аргументами. Используй полученные данные, выполни следующий подходящий шаг или задай пользователю короткий уточняющий вопрос.")
+			continue
+		}
+		called[callKey] = struct{}{}
 		result, err := tool.Execute(ctx, call.Arguments)
 		if err != nil {
 			slog.Warn("agent tool failed", "tool", call.Name, "error", err)
@@ -97,13 +105,9 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 			continue
 		}
 		slog.Info("agent tool executed", "tool", call.Name)
-		instruction := ""
-		if call.Name == "schedule_search" {
-			instruction = " Выбери подходящий #ID из результата и в следующем шаге вызови event_update или event_cancel; не вызывай schedule_search повторно."
-		}
-		prompt = appendToolResult(prompt, call.Name, result.Content+instruction)
+		prompt = appendToolResult(prompt, call.Name, result.Content)
 	}
-	return Result{}, fmt.Errorf("agent exceeded maximum tool rounds")
+	return Result{Reply: "Не удалось завершить проверку данных за один запрос. Уточните, пожалуйста, название или дату нужного занятия."}, nil
 }
 
 func completeAgentJSON(ctx context.Context, client Client, system, prompt string) (string, error) {
@@ -164,22 +168,10 @@ func truncateUTF8(text string, limit int) string {
 // Authorization happens before ModeAdminPrivate is constructed by Telegram.
 func (a Agent) ToolsFor(mode Mode) []Tool {
 	tools := append([]Tool(nil), a.Tools...)
-	if mode == ModeAdminPrivate {
+	if mode == ModeAdminPrivate || mode == ModeGroupWrite {
 		tools = append(tools, a.AdminTools...)
 	}
 	return tools
-}
-
-func needsGroupContext(c Conversation) bool {
-	for _, message := range c.Messages {
-		text := strings.ToLower(message.Text)
-		for _, term := range []string{"пара", "пары", "заняти", "контрольн", "экзамен", "расписани", "кажд", "еженед", "недел", "неделя", "дедлайн"} {
-			if strings.Contains(text, term) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func renderConversation(c Conversation, definitions []string) string {

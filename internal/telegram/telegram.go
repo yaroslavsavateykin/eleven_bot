@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -238,7 +237,12 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		if arg == "" && m.ReplyToMessage != nil {
 			arg = m.ReplyToMessage.Text
 		}
-		s.event(ctx, b, m.Chat.ID, m.ID, arg, userID)
+		if arg == "" {
+			s.sendReply(ctx, b, m.Chat.ID, m.ID, "Опишите событие после /event.")
+			break
+		}
+		stored.Text = arg
+		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, stored, agent.ModeGroupWrite)
 	default:
 		s.sendReply(ctx, b, m.Chat.ID, m.ID, "Неизвестная команда. Напишите /help.")
 	}
@@ -351,25 +355,7 @@ func (s Service) mentioned(text string) bool {
 }
 
 func (s Service) mention(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message) {
-	if isEventWriteRequest(m.Text) {
-		slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", "mention", "resolved_mode", "event")
-		s.processEvent(ctx, b, m.Chat.ID, m.ID, m.ID, derefUserID(current.UserID), m.Text, m.Text, "", false)
-		return
-	}
-	if s.Agent.Client == nil {
-		return
-	}
-	chain, err := s.conversations().BuildReplyChain(ctx, current.ID)
-	if err != nil {
-		slog.Error("mention context failed", "error", err)
-		return
-	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: chain, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
-	if err != nil {
-		slog.Error("mention agent failed", "error", err)
-		return
-	}
-	s.sendReply(ctx, b, m.Chat.ID, m.ID, limit(result.Reply, 1800))
+	s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeGroup)
 }
 
 func replyID(m *models.Message) *int {
@@ -759,43 +745,18 @@ func (s Service) askReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo
 		send("Напишите вопрос после /ask.")
 		return
 	}
-	if s.Agent.Client != nil {
-		result, err := s.Agent.Run(ctx, agent.Conversation{Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
-		if err != nil {
-			slog.Error("ask agent", "error", err)
-			send("Не удалось получить ответ от AI. Попробуйте позже.")
-			return
-		}
-		send(limit(result.Reply, 1800))
+	_ = userID
+	if s.Agent.Client == nil {
+		send("AI не настроен.")
 		return
 	}
-	status, err := s.Schedule.CurrentStatus(ctx, time.Now())
+	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
 	if err != nil {
-		send("Не удалось прочитать расписание.")
-		return
-	}
-	var summary string
-	_ = s.DB.QueryRowContext(ctx, "SELECT summary FROM user_contexts WHERE group_id=? AND user_id=?", s.GroupID, userID).Scan(&summary)
-	now := time.Now().In(s.Schedule.TZ)
-	current := "сейчас пары нет"
-	if status.Current != nil {
-		end := status.Current.StartsAt.Add(95 * time.Minute)
-		if status.Current.EndsAt != nil {
-			end = *status.Current.EndsAt
-		}
-		current = status.Current.Title + " до " + end.In(s.Schedule.TZ).Format("15:04")
-	}
-	next := ""
-	if status.Next != nil {
-		next = "Следующая: " + status.Next.Title + " в " + status.Next.StartsAt.In(s.Schedule.TZ).Format("15:04")
-	}
-	answer, err := s.AI.Complete(ctx, prompts.AskSystem, fmt.Sprintf("Текущее время: %s (%s). Статус расписания: %s. %s. Compact context автора (использовать только как необязательный фон, не цитировать): %s. Вопрос: %s", now.Format("02.01 15:04"), s.Schedule.TZ, current, next, summary, question))
-	if err != nil {
-		slog.Error("ask AI", "error", err)
+		slog.Error("ask agent", "error", err)
 		send("Не удалось получить ответ от AI. Попробуйте позже.")
 		return
 	}
-	send(limit(answer, 1800))
+	send(limit(result.Reply, 1800))
 }
 func (s Service) roast(ctx context.Context, b *bot.Bot, chatID int64, arg string, reply *models.Message) {
 	s.roastReply(ctx, b, chatID, 0, arg, reply)
@@ -860,43 +821,8 @@ func (s Service) allowed(chatID, userID int64, private bool) bool {
 
 func privateCommandAllowed(command string) bool { return command == "/sync" }
 
-func isEventWriteRequest(text string) bool {
-	text = strings.ToLower(text)
-	for _, word := range []string{"добав", "запиш", "постав", "перенес", "измени", "замени", "удали", "убер", "отмен"} {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func derefUserID(id *int64) int64 {
-	if id == nil {
-		return 0
-	}
-	return *id
-}
-
 func (s Service) askPrivate(ctx context.Context, b *bot.Bot, chatID int64, question string, current conversation.Message) {
-	if s.Agent.Client == nil {
-		s.ask(ctx, b, chatID, question, s.AdminID)
-		return
-	}
-	messages := []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}
-	if current.ID != 0 {
-		chain, err := s.conversations().BuildReplyChain(ctx, current.ID)
-		if err != nil {
-			slog.Error("private conversation context failed", "error", err, "message_id", current.TelegramMessageID)
-		} else if len(chain) > 0 {
-			messages = chain
-		}
-	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: agent.ModeAdminPrivate})
-	if err != nil {
-		s.send(ctx, b, chatID, "Не удалось подготовить ответ. Попробуйте позже.")
-		return
-	}
-	s.send(ctx, b, chatID, limit(result.Reply, 1800))
+	s.runAgentReply(ctx, b, chatID, 0, current, agent.ModeAdminPrivate)
 }
 
 func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message, userID int64, command, arg string) {
@@ -914,7 +840,8 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 			s.send(ctx, b, m.Chat.ID, "Опишите событие после /event.")
 			return
 		}
-		s.processEvent(ctx, b, m.Chat.ID, m.ID, m.ID, userID, arg, arg, "", true)
+		current.Text = arg
+		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeAdminPrivate)
 	case "/help", "/start":
 		s.send(ctx, b, m.Chat.ID, "Можно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании.\n/sync preview — показать накопленные изменения\n/sync — опубликовать их группе")
 	default:
@@ -1024,252 +951,31 @@ func telegramParts(text string) []string {
 	return append(parts, text)
 }
 
-func (s Service) processPrivateEvent(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message, userID int64) {
-	_ = current
-	_ = userID
-	candidates, err := s.Schedule.Candidates(ctx)
-	if err != nil {
-		s.send(ctx, b, m.Chat.ID, "Не удалось прочитать расписание.")
-		return
-	}
-	parsed, err := s.AI.ParseScheduleInput(ctx, m.Text, time.Now(), s.Schedule.TZ, candidates)
-	if err != nil {
-		slog.Error("admin schedule import", "error", err)
-		s.send(ctx, b, m.Chat.ID, "Не удалось разобрать изменения расписания. Попробуйте позже.")
-		return
-	}
-	for i := range parsed.Operations {
-		parsed.Operations[i].Event.GroupID = s.GroupID
-		parsed.Operations[i].Announce = true
-	}
-	var imported schedule.ImportResult
-	if len(parsed.Operations) > 0 {
-		imported, err = s.Schedule.ApplyImport(ctx, parsed.Operations, m.Chat.ID, m.ID)
-		if err != nil {
-			slog.Error("apply admin schedule import", "message_id", m.ID, "operation_count", len(parsed.Operations), "phase", "persistence", "error", err)
-			s.send(ctx, b, m.Chat.ID, "Не удалось сохранить изменения из-за внутренней ошибки.")
-			return
-		}
-	}
-	for _, skipped := range imported.Skipped {
-		source := skipped.Proposal.SourceText
-		if source == "" {
-			source = skipped.Proposal.Event.Title
-		}
-		parsed.Skipped = append(parsed.Skipped, ai.SkippedInput{Source: source, Reason: skipped.Reason})
-	}
-	s.send(ctx, b, m.Chat.ID, s.adminImportSummary(imported.Events, imported.Applied, parsed.Skipped))
-}
-
-func (s Service) adminImportSummary(events []schedule.Event, proposals []schedule.Proposal, skipped []ai.SkippedInput) string {
-	if len(events) == 0 && len(skipped) == 0 {
-		return "Из этого сообщения не нашёл достаточно определённых изменений расписания."
-	}
-	sections := make(map[string][]string)
-	for i, event := range events {
-		kind := map[string]string{"create": "Добавил", "update": "Изменил", "cancel": "Отменил"}[proposals[i].Operation]
-		sections[kind] = append(sections[kind], "• "+strings.TrimPrefix(s.eventSummary(event, proposals[i]), kind+": "))
-	}
-	var out []string
-	for _, kind := range []string{"Добавил", "Изменил", "Отменил"} {
-		if lines := sections[kind]; len(lines) > 0 {
-			out = append(out, kind+":\n"+strings.Join(lines, "\n"))
-		}
-	}
-	if len(skipped) > 0 {
-		lines := make([]string, 0, len(skipped))
-		for _, item := range skipped {
-			source := strings.TrimSpace(item.Source)
-			if source == "" {
-				source = "Фрагмент расписания"
-			}
-			lines = append(lines, "• "+limit(source, 100)+" — "+limit(item.Reason, 140)+".")
-		}
-		out = append(out, "Пропустил:\n"+strings.Join(lines, "\n"))
-	}
-	return "Обновил расписание:\n\n" + strings.Join(out, "\n\n")
-}
-
-func (s Service) event(ctx context.Context, b *bot.Bot, chatID int64, messageID int, text string, userID int64) {
-	if text == "" {
-		s.sendReply(ctx, b, chatID, messageID, "Укажите запрос после /event: дату и время; для изменения или отмены назовите событие.")
-		return
-	}
-	s.processEvent(ctx, b, chatID, messageID, messageID, userID, text, text, "", false)
-}
-
-func (s Service) askEvent(ctx context.Context, b *bot.Bot, chatID int64, originalMessageID int, candidates []schedule.Event, question string) {
-	question = aiRussian(question)
-	for i, e := range candidates {
-		if i == 8 {
-			break
-		}
-		question += fmt.Sprintf("\n%d. %s, %s", i+1, e.StartsAt.In(s.Schedule.TZ).Format("02.01 15:04"), limit(e.Title, 70))
-	}
-	m, err := s.sendReply(ctx, b, chatID, originalMessageID, limit(question, 3500))
-	if err != nil || m == nil {
-		return
-	}
-}
-
 func (s Service) reply(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message, userID int64) {
-	parentFound := false
-	chain, err := s.conversations().BuildReplyChain(ctx, current.ID)
-	if err != nil {
-		slog.Error("conversation context failed", "error", err)
-		chain = nil
-	}
-	if m.ReplyToMessage != nil {
-		parent, parentErr := s.conversations().ByTelegramID(ctx, m.Chat.ID, m.ReplyToMessage.ID)
-		parentFound = parentErr == nil && parent.SenderType == conversation.SenderBot
-	}
-	if !parentFound {
-		slog.Warn("conversation parent missing from graph", "message_id", m.ID, "chat_id", m.Chat.ID, "reply_to_message_id", replyID(m))
-		chain = []conversation.Message{{SenderType: conversation.SenderBot, Text: m.ReplyToMessage.Text}, current}
-	}
-	slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", "reply_to_bot", "parent_found_in_db", parentFound)
-	// A current explicit write request starts a fresh event operation even inside
-	// an older clarification chain.
-	if isEventWriteRequest(m.Text) {
-		slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", "reply_to_bot", "resolved_mode", "event", "parent_found_in_db", parentFound)
-		s.processEvent(ctx, b, m.Chat.ID, m.ID, m.ID, userID, m.Text, m.Text, renderChain(chain), false)
-		return
-	}
-	root, found, err := s.conversations().FindConversationRoot(ctx, current.ID, "/event", 128)
-	if err != nil {
-		slog.Error("event root discovery failed", "error", err)
-		return
-	}
-	if found {
-		if root.UserID == nil || *root.UserID != userID {
-			slog.Warn("event reply from non-owner", "user_id", userID)
-			return
-		}
-		s.processEvent(ctx, b, m.Chat.ID, m.ID, m.ID, userID, m.Text, root.Text, renderChain(chain), false)
-		return
-	}
-	slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", "reply_to_bot", "resolved_mode", "conversation", "parent_found_in_db", parentFound)
+	_ = userID
+	s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeGroup)
+}
+
+func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, current conversation.Message, mode agent.Mode) {
 	if s.Agent.Client == nil {
-		s.ask(ctx, b, m.Chat.ID, m.Text, userID)
 		return
 	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: chain, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
+	messages := []conversation.Message{{SenderType: conversation.SenderUser, Text: current.Text}}
+	if current.ID != 0 {
+		if chain, err := s.conversations().BuildReplyChain(ctx, current.ID); err == nil && len(chain) > 0 {
+			messages = chain
+		}
+	}
+	result, err := s.Agent.Run(ctx, agent.Conversation{Messages: messages, Now: time.Now(), Timezone: s.Schedule.TZ.String(), Mode: mode})
 	if err != nil {
-		slog.Error("conversation agent failed", "error", err)
-		s.sendReply(ctx, b, m.Chat.ID, m.ID, "Не удалось подготовить ответ. Попробуйте позже.")
+		slog.Error("agent", "error", err)
 		return
 	}
-	s.sendReply(ctx, b, m.Chat.ID, m.ID, limit(result.Reply, 1800))
-}
-
-func renderChain(chain []conversation.Message) string {
-	var lines []string
-	for _, m := range chain {
-		role := "Пользователь"
-		if m.SenderType == conversation.SenderBot {
-			role = "Бот"
-		}
-		lines = append(lines, role+": "+m.Text)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func aiRussian(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" || len(text) > 500 {
-		return "Уточните дату, время или нужное событие."
-	}
-	for _, r := range text {
-		if r >= 'A' && r <= 'z' {
-			return "Уточните дату, время или нужное событие."
-		}
-	}
-	return text
-}
-
-func (s Service) processEvent(ctx context.Context, b *bot.Bot, chatID int64, sourceMessageID, replyToMessageID int, userID int64, text, original, prior string, announce bool) {
-	fields := strings.Fields(original + " " + text)
-	candidates, err := s.Schedule.Candidates(ctx)
-	if err != nil {
-		s.sendReply(ctx, b, chatID, replyToMessageID, "Не удалось прочитать события.")
+	if replyTo != 0 {
+		s.sendReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
 		return
 	}
-	// Explicit IDs narrow the model's authority, not just its prompt.
-	var explicit int64
-	for _, word := range fields {
-		if strings.HasPrefix(word, "#") {
-			id, er := strconv.ParseInt(strings.TrimPrefix(word, "#"), 10, 64)
-			if er != nil || id <= 0 || explicit != 0 {
-				s.sendReply(ctx, b, chatID, replyToMessageID, "Укажите один корректный #ID.")
-				return
-			}
-			explicit = id
-		}
-	}
-	if explicit != 0 {
-		var selected []schedule.Event
-		for _, e := range candidates {
-			if e.ID == explicit {
-				selected = append(selected, e)
-			}
-		}
-		if len(selected) == 0 {
-			s.sendReply(ctx, b, chatID, replyToMessageID, "Активное событие с таким #ID не найдено в группе.")
-			return
-		}
-		candidates = selected
-	}
-	candidates = filterEventCandidates(candidates, original+" "+text)
-	dialogue := "Исходный запрос пользователя: " + text
-	if prior != "" {
-		dialogue = prior + "\nУточнение пользователя: " + text
-	}
-	proposals, question, err := s.AI.ParseOperations(ctx, dialogue, time.Now(), s.Schedule.TZ, candidates)
-	if err != nil {
-		s.askEvent(ctx, b, chatID, replyToMessageID, candidates, err.Error())
-		return
-	}
-	if question != "" {
-		s.askEvent(ctx, b, chatID, replyToMessageID, candidates, question)
-		return
-	}
-	for i, p := range proposals {
-		if explicit != 0 && (p.Operation == "create" || p.Event.ID != explicit) {
-			s.askEvent(ctx, b, chatID, replyToMessageID, candidates, "Уточните, какое событие изменить или отменить.")
-			return
-		}
-		proposals[i].Event.GroupID = s.GroupID
-		proposals[i].Announce = announce
-	}
-	events, applyErr := s.Schedule.ApplyAll(ctx, proposals, chatID, sourceMessageID)
-	if applyErr != nil {
-		s.sendReply(ctx, b, chatID, replyToMessageID, "Не сохранено: данные недоступны или событие изменилось. Повторите /event.")
-		return
-	}
-	summaries := make([]string, 0, len(proposals))
-	for i, e := range events {
-		summaries = append(summaries, s.eventSummary(e, proposals[i]))
-	}
-	s.sendReply(ctx, b, chatID, replyToMessageID, strings.Join(summaries, "\n"))
-}
-
-// filterEventCandidates narrows clarification choices only when the request carries
-// an unambiguous subject stem; the AI still makes the semantic target decision.
-func filterEventCandidates(candidates []schedule.Event, text string) []schedule.Event {
-	text = strings.ToLower(text)
-	if !strings.Contains(text, "математ") {
-		return candidates
-	}
-	filtered := make([]schedule.Event, 0, len(candidates))
-	for _, event := range candidates {
-		if strings.Contains(strings.ToLower(event.Title), "математ") {
-			filtered = append(filtered, event)
-		}
-	}
-	if len(filtered) == 0 {
-		return candidates
-	}
-	return filtered
+	s.send(ctx, b, chatID, limit(result.Reply, 1800))
 }
 
 func (s Service) eventSummary(e schedule.Event, p schedule.Proposal) string {
@@ -1283,11 +989,6 @@ func (s Service) eventSummary(e schedule.Event, p schedule.Proposal) string {
 	when := e.StartsAt.In(s.Schedule.TZ).Format("02.01")
 	if recurrence := recurrenceSummary(e, s.Schedule.TZ); recurrence != "" {
 		when = recurrence
-		if p.WeekParity == "even" {
-			when = "по чётным неделям " + strings.TrimSuffix(when, ", раз в две недели")
-		} else if p.WeekParity == "odd" {
-			when = "по нечётным неделям " + strings.TrimSuffix(when, ", раз в две недели")
-		}
 	}
 	if !e.AllDay {
 		when += ", " + e.StartsAt.In(s.Schedule.TZ).Format("15:04")

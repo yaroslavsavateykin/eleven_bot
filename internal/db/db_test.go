@@ -100,3 +100,36 @@ func TestMessageGraphMigrationPreservesLegacyReply(t *testing.T) {
 		t.Fatalf("wrong migrated graph: %q %#v %#v", sender, raw, internal)
 	}
 }
+
+func TestMessageSearchMigrationBackfillsLegacyMessages(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-fts.db")
+	d, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"001_init.sql", "002_parse_errors.sql", "003_event_category.sql", "004_event_operations.sql", "005_multi_event_sources.sql", "006_message_graph.sql", "007_telegram_receipt_state.sql", "008_receipt_lease.sql", "009_receipt_claim_token.sql", "010_receipt_attempts.sql", "011_message_media.sql", "012_image_context_entries.sql", "013_group_announcements.sql", "014_release_notifications.sql", "015_event_recurrence_horizon.sql"} {
+		b, er := migrations.ReadFile("migrations/" + version)
+		if er != nil {
+			t.Fatal(er)
+		}
+		if _, er = d.Exec(string(b)); er != nil {
+			t.Fatal(er)
+		}
+	}
+	if _, err = d.Exec("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations SELECT '001_init.sql','now' UNION ALL SELECT '002_parse_errors.sql','now' UNION ALL SELECT '003_event_category.sql','now' UNION ALL SELECT '004_event_operations.sql','now' UNION ALL SELECT '005_multi_event_sources.sql','now' UNION ALL SELECT '006_message_graph.sql','now' UNION ALL SELECT '007_telegram_receipt_state.sql','now' UNION ALL SELECT '008_receipt_lease.sql','now' UNION ALL SELECT '009_receipt_claim_token.sql','now' UNION ALL SELECT '010_receipt_attempts.sql','now' UNION ALL SELECT '011_message_media.sql','now' UNION ALL SELECT '012_image_context_entries.sql','now' UNION ALL SELECT '013_group_announcements.sql','now' UNION ALL SELECT '014_release_notifications.sql','now' UNION ALL SELECT '015_event_recurrence_horizon.sql','now'; INSERT INTO groups VALUES(1,'test',-1,'UTC','test','now','now'); INSERT INTO users(id,telegram_user_id,created_at,updated_at) VALUES(1,1,'now','now'); INSERT INTO messages(id,group_id,telegram_chat_id,telegram_message_id,user_id,sender_type,sent_at,kind,text,metadata_json,created_at) VALUES(1,1,-1,10,1,'user','now','text','Практикум по радиохимии','{}','now')"); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	var text string
+	if err = d.QueryRow("SELECT text FROM messages_fts WHERE messages_fts MATCH 'радиохимии'").Scan(&text); err != nil || text != "Практикум по радиохимии" {
+		t.Fatalf("fts result=%q err=%v", text, err)
+	}
+}

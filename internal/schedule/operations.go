@@ -18,7 +18,6 @@ type Proposal struct {
 	Event       Event  `json:"event"`
 	Before      string `json:"before"`
 	Inferred    bool   `json:"inferred"`
-	WeekParity  string `json:"week_parity,omitempty"`
 	Announce    bool   `json:"-"`
 	SourceIndex int    `json:"source_index,omitempty"`
 	SourceText  string `json:"source_text,omitempty"`
@@ -352,12 +351,6 @@ func (s Service) prepareProposal(p Proposal) (Proposal, error) {
 		return p, nil
 	}
 	var err error
-	if p.WeekParity != "" {
-		e, err = s.normalizeWeekParity(e, p.WeekParity)
-		if err != nil {
-			return p, err
-		}
-	}
 	e, err = s.normalizeRecurrence(e)
 	if err != nil {
 		return p, err
@@ -382,14 +375,6 @@ func infrastructureError(err error) bool {
 
 func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int64, messageID, operationIndex int) (Event, error) {
 	e := p.Event
-	if p.Operation != "cancel" && p.WeekParity != "" {
-		var err error
-		e, err = s.normalizeWeekParity(e, p.WeekParity)
-		if err != nil {
-			return e, err
-		}
-		p.Event = e
-	}
 	if p.Operation != "cancel" {
 		var err error
 		e, err = s.normalizeRecurrence(e)

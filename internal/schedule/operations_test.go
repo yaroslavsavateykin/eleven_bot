@@ -324,24 +324,7 @@ func TestApplyAllReplayReturnsPersistedEvents(t *testing.T) {
 	}
 }
 
-func TestAcademicWeekParityAlternatesFromConfiguredReference(t *testing.T) {
-	s := Service{TZ: time.UTC, WeekParity: WeekParityConfig{ReferenceWeekStart: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC), ReferenceParity: "even"}}
-	for _, tc := range []struct {
-		date time.Time
-		want string
-	}{
-		{time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), "even"},
-		{time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC), "odd"},
-		{time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), "even"},
-	} {
-		got, err := s.AcademicWeekParity(tc.date)
-		if err != nil || got != tc.want {
-			t.Fatalf("date=%s parity=%q err=%v", tc.date, got, err)
-		}
-	}
-}
-
-func TestApplyNormalizesAcademicWeekParitySeries(t *testing.T) {
+func TestApplyStoresBiweeklySeriesWithoutParityState(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "parity.db"))
 	if err != nil {
@@ -351,56 +334,21 @@ func TestApplyNormalizesAcademicWeekParitySeries(t *testing.T) {
 	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
 		t.Fatal(err)
 	}
-	s := Service{DB: d, GroupID: 1, TZ: time.UTC, WeekParity: WeekParityConfig{ReferenceWeekStart: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC), ReferenceParity: "odd"}}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
 	rule := "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;COUNT=6"
-	start := time.Date(2026, 9, 8, 10, 50, 0, 0, time.UTC) // Tuesday in the configured odd week.
+	start := time.Date(2026, 9, 15, 10, 50, 0, 0, time.UTC)
 	end := start.Add(95 * time.Minute)
 	e := Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Квантовая химия", StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}
-	created, err := s.Apply(ctx, Proposal{Operation: "create", Event: e, WeekParity: "even"}, 10, 1)
+	created, err := s.Apply(ctx, Proposal{Operation: "create", Event: e}, 10, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := time.Date(2026, 9, 15, 10, 50, 0, 0, time.UTC); !created.StartsAt.Equal(want) || !created.EndsAt.Equal(want.Add(95*time.Minute)) {
-		t.Fatalf("normalized event=%#v want start=%s", created, want)
-	}
-	if parity, err := s.AcademicWeekParity(created.StartsAt); err != nil || parity != "even" {
-		t.Fatalf("saved parity=%q err=%v", parity, err)
-	}
-	var payload string
-	if err = d.QueryRow(`SELECT payload_json FROM change_log WHERE entity_id=?`, created.ID).Scan(&payload); err != nil || !strings.Contains(payload, `"week_parity":"even"`) || !strings.Contains(payload, "2026-09-15") {
-		t.Fatalf("changelog=%q err=%v", payload, err)
-	}
-	noConfig := s
-	noConfig.WeekParity = WeekParityConfig{}
-	if _, err = noConfig.Apply(ctx, Proposal{Operation: "create", Event: e, WeekParity: "even"}, 10, 2); err == nil || !strings.Contains(err.Error(), "Не настроено") {
-		t.Fatalf("missing parity configuration accepted: %v", err)
-	}
-	oneTime := e
-	oneTime.Title = "Консультация"
-	oneTime.RRule = nil
-	oneTime.StartsAt = start
-	oneTime.EndsAt = &end
-	single, err := s.Apply(ctx, Proposal{Operation: "create", Event: oneTime, WeekParity: "even"}, 10, 3)
-	if err != nil || !single.StartsAt.Equal(time.Date(2026, 9, 15, 10, 50, 0, 0, time.UTC)) || single.RRule != nil {
-		t.Fatalf("one-time parity event=%#v err=%v", single, err)
-	}
-	before := s.Get(ctx, created.ID)
-	updated := before
-	updated.RRule = &rule
-	updated.StartsAt = created.StartsAt
-	updatedEnd := updated.StartsAt.Add(95 * time.Minute)
-	updated.EndsAt = &updatedEnd
-	changed, err := s.Apply(ctx, Proposal{Operation: "update", Event: updated, Before: Snapshot(before), WeekParity: "odd"}, 10, 4)
-	if err != nil || changed.ID != created.ID || !changed.StartsAt.Equal(time.Date(2026, 9, 22, 10, 50, 0, 0, time.UTC)) {
-		t.Fatalf("even-to-odd update=%#v err=%v", changed, err)
-	}
-	var count int
-	if err = d.QueryRow(`SELECT count(*) FROM events WHERE title='Квантовая химия' AND status='active'`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("parity update created a second series: count=%d err=%v", count, err)
+	if !created.StartsAt.Equal(start) || created.RRule == nil || !strings.Contains(*created.RRule, "INTERVAL=2") {
+		t.Fatalf("event=%#v", created)
 	}
 }
 
-func TestApplyBoundsUnboundedParitySeriesToDefaultHorizon(t *testing.T) {
+func TestApplyBoundsUnboundedBiweeklySeriesToDefaultHorizon(t *testing.T) {
 	ctx := context.Background()
 	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "horizon.db"))
 	if err != nil {
@@ -410,28 +358,17 @@ func TestApplyBoundsUnboundedParitySeriesToDefaultHorizon(t *testing.T) {
 	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
 		t.Fatal(err)
 	}
-	s := Service{DB: d, GroupID: 1, TZ: time.UTC, WeekParity: WeekParityConfig{ReferenceWeekStart: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC), ReferenceParity: "odd"}}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
 	rule := "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"
 	start := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC) // Friday in the current odd week.
 	end := start.Add(95 * time.Minute)
-	created, err := s.Apply(ctx, Proposal{Operation: "create", WeekParity: "even", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "География", StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}}, 10, 1)
+	created, err := s.Apply(ctx, Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "География", StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}}, 10, 1)
 	if err != nil || created.RRule == nil || !strings.Contains(*created.RRule, "UNTIL=") || created.RecurrenceHorizon != "default" {
 		t.Fatalf("created=%#v err=%v", created, err)
-	}
-	if want := time.Date(2026, 9, 18, 9, 0, 0, 0, time.UTC); !created.StartsAt.Equal(want) || !created.EndsAt.Equal(want.Add(95*time.Minute)) {
-		t.Fatalf("start=%s end=%s", created.StartsAt, created.EndsAt)
 	}
 	opt, err := rrule.StrToROption(*created.RRule)
 	if err != nil || opt.Until.IsZero() || opt.Until.Sub(created.StartsAt) > time.Duration(DefaultRecurrenceHorizonWeeks*7)*24*time.Hour+time.Second {
 		t.Fatalf("rule=%q opt=%#v err=%v", *created.RRule, opt, err)
-	}
-	r, _ := rrule.NewRRule(*opt)
-	r.DTStart(created.StartsAt)
-	for occurrence := r.After(created.StartsAt, true); !occurrence.IsZero(); occurrence = r.After(occurrence, false) {
-		parity, parityErr := s.AcademicWeekParity(occurrence)
-		if parityErr != nil || parity != "even" {
-			t.Fatalf("occurrence=%s parity=%q err=%v", occurrence, parity, parityErr)
-		}
 	}
 }
 
@@ -513,11 +450,11 @@ func TestApplyImportDeduplicatesGeneratedRecurrenceHorizon(t *testing.T) {
 	if _, err = d.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
 		t.Fatal(err)
 	}
-	s := Service{DB: d, GroupID: 1, TZ: time.UTC, WeekParity: WeekParityConfig{ReferenceWeekStart: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC), ReferenceParity: "even"}}
+	s := Service{DB: d, GroupID: 1, TZ: time.UTC}
 	rule := "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"
 	start := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
 	end := start.Add(95 * time.Minute)
-	p := Proposal{Operation: "create", WeekParity: "even", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "География", StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}}
+	p := Proposal{Operation: "create", Event: Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "География", StartsAt: start, EndsAt: &end, Timezone: "UTC", RRule: &rule}}
 	first, err := s.ApplyImport(ctx, []Proposal{p}, 10, 1)
 	if err != nil || len(first.Events) != 1 || first.Events[0].RecurrenceHorizon != "default" {
 		t.Fatalf("first=%#v err=%v", first, err)
