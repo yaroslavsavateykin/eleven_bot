@@ -54,9 +54,9 @@ func TestAgentExecutesOnlyRegisteredTool(t *testing.T) {
 	}
 }
 func TestWriteToolsAreNotAvailableInGroupMode(t *testing.T) {
-	read, write := &fakeTool{name: "schedule_query"}, &fakeTool{name: "schedule_create"}
-	a := Agent{Tools: []Tool{read}, AdminTools: []Tool{write}}
-	if len(a.ToolsFor(ModeGroup)) != 1 || len(a.ToolsFor(ModeGroupWrite)) != 2 || len(a.ToolsFor(ModeAdminPrivate)) != 2 {
+	read, write, batch := &fakeTool{name: "schedule_query"}, &fakeTool{name: "schedule_create"}, &fakeTool{name: "schedule_create_batch"}
+	a := Agent{Tools: []Tool{read}, AdminTools: []Tool{write, batch}}
+	if len(a.ToolsFor(ModeGroup)) != 1 || len(a.ToolsFor(ModeGroupWrite)) != 3 || len(a.ToolsFor(ModeAdminPrivate)) != 3 {
 		t.Fatal("wrong tool registry")
 	}
 }

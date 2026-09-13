@@ -80,6 +80,7 @@ func main() {
 		},
 		AdminTools: []agent.Tool{
 			agent.ScheduleMutationTool{Schedule: s, Operation: "create", Announce: true},
+			agent.ScheduleMutationTool{Schedule: s, Operation: "create_batch", Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "update", Announce: true},
 			agent.ScheduleMutationTool{Schedule: s, Operation: "cancel", Announce: true},
 		},
