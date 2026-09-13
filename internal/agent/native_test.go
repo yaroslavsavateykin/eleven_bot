@@ -199,7 +199,7 @@ func (f chatFunc) Chat(ctx context.Context, r ai.ChatRequest) (ai.AssistantTurn,
 
 func TestContextCompactionProtectsToolExchange(t *testing.T) {
 	input := testInput()
-	input.Messages = []conversation.Message{{SenderType: conversation.SenderUser, Text: strings.Repeat("old", 4000)}, {SenderType: conversation.SenderBot, Text: "immediate parent"}, {SenderType: conversation.SenderUser, Text: "current"}}
+	input.Messages = []conversation.Message{{SenderType: conversation.SenderUser, Text: strings.Repeat("old", 10000)}, {SenderType: conversation.SenderBot, Text: "immediate parent"}, {SenderType: conversation.SenderUser, Text: "current"}}
 	round := 0
 	tool := &fakeTool{name: "schedule_query"}
 	client := chatFunc(func(_ context.Context, r ai.ChatRequest) (ai.AssistantTurn, error) {
@@ -215,7 +215,7 @@ func TestContextCompactionProtectsToolExchange(t *testing.T) {
 		}
 		return ai.AssistantTurn{Content: "done"}, nil
 	})
-	result, err := (Agent{Client: client, Tools: []Tool{tool}, ContextBytes: 12000}).Run(context.Background(), input)
+	result, err := (Agent{Client: client, Tools: []Tool{tool}, ContextBytes: 30000}).Run(context.Background(), input)
 	if err != nil || result.Reply != "done" || round != 2 {
 		t.Fatalf("%+v %v rounds %d", result, err, round)
 	}

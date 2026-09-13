@@ -847,10 +847,10 @@ func (s Service) ask(ctx context.Context, b *bot.Bot, chatID int64, question str
 func (s Service) askReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, question string, userID int64) {
 	send := func(text string) {
 		if replyTo != 0 {
-			s.sendMarkdownReply(ctx, b, chatID, replyTo, text)
+			s.sendReply(ctx, b, chatID, replyTo, text)
 			return
 		}
-		s.sendMarkdown(ctx, b, chatID, text)
+		s.send(ctx, b, chatID, text)
 	}
 	if question == "" {
 		send("Напишите вопрос после /ask.")
@@ -1228,10 +1228,10 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		return
 	}
 	if replyTo != 0 {
-		s.sendMarkdownReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
+		s.sendReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
 		return
 	}
-	s.sendMarkdown(ctx, b, chatID, limit(result.Reply, 1800))
+	s.send(ctx, b, chatID, limit(result.Reply, 1800))
 }
 
 // withAuthorNames prefixes user messages with the speaker's first name so the
