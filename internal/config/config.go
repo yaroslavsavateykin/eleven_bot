@@ -30,20 +30,21 @@ type Semester struct {
 
 func Load() (Config, error) {
 	c := Config{Token: os.Getenv("TELEGRAM_BOT_TOKEN"), DiscoveryMode: strings.EqualFold(os.Getenv("TELEGRAM_DISCOVERY_MODE"), "true"), GroupName: value("GROUP_NAME", "411 группа"), Timezone: value("GROUP_TIMEZONE", "Europe/Moscow"), DBPath: value("DATABASE_PATH", "data/app.db"), BaseURL: strings.TrimRight(value("BASE_URL", "http://localhost:6767"), "/"), ExternalToken: os.Getenv("EXTERNAL_API_TOKEN"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), HTTPAddr: value("HTTP_ADDR", ":6767"), GitHubRepository: value("GITHUB_REPOSITORY", "yaroslavsavateykin/eleven_bot"), Retention: 48 * time.Hour, AIBaseURL: os.Getenv("AI_BASE_URL"), AIKey: os.Getenv("AI_API_KEY"), AITextModel: os.Getenv("AI_TEXT_MODEL"), AIVisionModel: os.Getenv("AI_VISION_MODEL"), AISTTModel: os.Getenv("AI_STT_MODEL")}
-	var err error
 	for key, target := range map[string]*bool{"AI_STRICT_TOOLS": &c.AIStrictTools, "AI_DISABLE_PARALLEL_TOOLS": &c.AIDisableParallelTools} {
 		if v := os.Getenv(key); v != "" {
-			*target, err = strconv.ParseBool(v)
-			if err != nil {
-				return c, fmt.Errorf("invalid %s", key)
+			parsed, perr := strconv.ParseBool(v)
+			if perr != nil {
+				parsed = strings.EqualFold(v, "1") || strings.EqualFold(v, "yes") || strings.EqualFold(v, "on")
 			}
+			*target = parsed
 		}
 	}
 	c.AIToolMode = value("AI_TOOL_MODE", "native")
 	if c.AIToolMode != "native" && c.AIToolMode != "legacy_json" {
-		return c, fmt.Errorf("AI_TOOL_MODE must be native or legacy_json")
+		c.AIToolMode = "native"
 	}
 	c.AIContextBytes = 131072
+	var err error
 	if v := os.Getenv("AI_CONTEXT_BYTES"); v != "" {
 		c.AIContextBytes, err = strconv.Atoi(v)
 		if err != nil || c.AIContextBytes < 16384 {

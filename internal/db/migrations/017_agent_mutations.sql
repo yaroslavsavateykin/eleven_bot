@@ -1,4 +1,4 @@
-CREATE TABLE agent_mutations (
+CREATE TABLE IF NOT EXISTS agent_mutations (
  group_id INTEGER NOT NULL REFERENCES groups(id),
  invocation_key TEXT NOT NULL,
  result_json TEXT NOT NULL,
