@@ -268,6 +268,30 @@ func TestScheduleQueryFindsSeriesDespiteWeekdayWords(t *testing.T) {
 	}
 }
 
+func TestScheduleQueryDateWordDoesNotFilter(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-date-word.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err = database.Exec(`INSERT INTO groups(id,name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES(1,'test',-1,'UTC','test','','')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := schedule.Service{DB: database, GroupID: 1, TZ: time.UTC}
+	start := time.Now().UTC().AddDate(0, 0, 1).Truncate(24 * time.Hour).Add(9 * time.Hour)
+	end := start.Add(95 * time.Minute)
+	if _, _, err = svc.Create(ctx, schedule.Event{GroupID: 1, Kind: "lesson", Category: "lesson", Title: "Лекция по химии", StartsAt: start, EndsAt: &end, Timezone: "UTC"}, "test", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	from := start.Truncate(24 * time.Hour).Format(time.RFC3339)
+	to := start.Truncate(24 * time.Hour).AddDate(0, 0, 1).Format(time.RFC3339)
+	result, err := (ScheduleQueryTool{Schedule: svc}).Execute(ctx, json.RawMessage(`{"from":"`+from+`","to":"`+to+`","query":"завтра"}`))
+	if err != nil || !strings.Contains(result.Content, "Лекция по химии") {
+		t.Fatalf("result=%s err=%v", result.Content, err)
+	}
+}
+
 func TestScheduleUpdatePatchPreservesRecurrence(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, filepath.Join(t.TempDir(), "agent-update.db"))

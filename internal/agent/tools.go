@@ -16,7 +16,7 @@ type ScheduleQueryTool struct{ Schedule schedule.Service }
 
 func (t ScheduleQueryTool) Name() string { return "schedule_query" }
 func (t ScheduleQueryTool) Description() string {
-	return "Finds schedule occurrences and recurring event series. Put only the subject/name into query, never weekday, date, pair number, or an action. Use the returned ID to update or cancel an event."
+	return "Finds schedule occurrences and recurring event series within the [from,to) range. To list a whole day or week, set from/to (RFC3339, group timezone) and leave query empty. Put a subject/name into query only to filter by subject; never put weekdays, dates, pair numbers, or actions there. Use the returned ID to update or cancel an event."
 }
 func (t ScheduleQueryTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"from":{"type":"string","description":"RFC3339 timestamp"},"to":{"type":"string","description":"RFC3339 timestamp, exclusive"},"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"additionalProperties":false}`)
@@ -37,7 +37,7 @@ func (t ScheduleQueryTool) Execute(ctx context.Context, raw json.RawMessage) (To
 	if err != nil {
 		return ToolResult{}, err
 	}
-	if args.Query != "" {
+	if len(subjectWords(args.Query)) > 0 {
 		filtered := events[:0]
 		for _, event := range events {
 			if matchesQuery(event.Title+" "+value(event.Description)+" "+value(event.Location), args.Query) {
@@ -134,6 +134,8 @@ func subjectWords(query string) []string {
 		"понедельник": true, "вторник": true, "среда": true, "четверг": true, "пятница": true, "суббота": true, "воскресенье": true,
 		"следующий": true, "ближайший": true, "пара": true, "пары": true, "первой": true, "второй": true, "третьей": true, "четвертой": true, "пятой": true,
 		"убери": true, "удали": true, "отмени": true, "исправь": true, "измени": true, "перенеси": true, "длину": true, "чтобы": true, "был": true,
+		"сегодня": true, "завтра": true, "послезавтра": true, "вчера": true, "неделю": true, "неделя": true, "неделе": true, "месяц": true, "месяце": true, "день": true, "дней": true,
+		"расписание": true, "расписании": true, "какое": true, "какие": true, "какой": true, "какая": true,
 	}
 	var words []string
 	for _, word := range strings.Fields(normalizeSearch(query)) {
