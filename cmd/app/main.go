@@ -98,7 +98,7 @@ func main() {
 	srv := &http.Server{Addr: c.HTTPAddr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
 	if err := telegramapp.Start(ctx, c.Token, telegramapp.Service{DB: d, Token: c.Token, Schedule: s, ChatID: c.GroupChatID, GroupID: groupID, AdminID: c.AdminTelegramUserID, Discovery: c.DiscoveryMode, BaseURL: c.BaseURL, GroupName: c.GroupName, GitHubRepository: c.GitHubRepository, AI: aiClient, Conversation: conversationService, Agent: botAgent}); err != nil {
 		slog.Error("telegram", "error", err)
-		os.Exit(1)
+		slog.Warn("telegram disabled due to startup error, http will continue")
 	}
 	go worker(ctx, conversationService, c.Retention)
 	go func() {

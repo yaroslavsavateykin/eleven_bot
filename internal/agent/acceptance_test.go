@@ -70,9 +70,9 @@ func TestAcceptanceScenarioA_PlainAnswer(t *testing.T) {
 	defer server.Close()
 
 	result, err := (Agent{
-		Client:     ai.Service{BaseURL: server.URL, Key: "test", Model: "x"},
-		Tools:      []Tool{&fakeTool{name: "schedule_query"}},
-		MaxRounds:  10,
+		Client:    ai.Service{BaseURL: server.URL, Key: "test", Model: "x"},
+		Tools:     []Tool{&fakeTool{name: "schedule_query"}},
+		MaxRounds: 10,
 	}).Run(context.Background(), testInput())
 	if err != nil || !strings.Contains(result.Reply, "Реакция") || rt.n != 1 {
 		t.Fatalf("result=%+v err=%v rounds=%d", result, err, rt.n)
