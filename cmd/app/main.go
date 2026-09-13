@@ -92,7 +92,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); fmt.Fprint(w, "ok\n") })
 	r.Get("/", w.Index)
-	r.Handle("/admin", admin.Handler{DB: d, GroupID: groupID, Password: c.AdminPassword})
+	r.Mount("/admin", admin.Handler{DB: d, GroupID: groupID, Password: c.AdminPassword}.Router())
 	r.Mount("/api", api.API{DB: d, Schedule: s, Token: c.ExternalToken, BaseURL: c.BaseURL}.Router())
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(webapp.Static())))
 	srv := &http.Server{Addr: c.HTTPAddr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
