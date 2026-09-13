@@ -1,292 +1,294 @@
-# Бот-помощник учебной группы
+# Eleven Bot
 
-Небольшой агент учебной группы в Telegram. Он отвечает на учебные вопросы сам, а для расписания и истории группы вызывает безопасные tools поверх SQLite.
+Telegram-бот для учебной группы: отвечает на вопросы, работает с расписанием и дедлайнами, умеет искать по истории сообщений группы и использует AI через OpenAI-compatible API.
 
-Бот не использует имя как часть личности. Технические display name и username Telegram-аккаунта не влияют на ответы.
+Основной способ запуска — Docker Compose. Данные хранятся в SQLite в каталоге `data/` и не пропадают после перезапуска контейнера.
 
-## Возможности
+## Что понадобится
 
-- Исключение одной даты из повторяющейся серии: `schedule_exclude_occurrence`
-  сохраняет все остальные даты. Для замены занятия исключается исходное вхождение
-  и создаётся отдельное событие. Исключения сохраняются в SQLite и учитываются
-  в расписании и проверках пересечений. `schedule_cancel` отменяет всю серию.
+- Linux-сервер, например Ubuntu 22.04/24.04 или Debian;
+- Telegram Bot Token от `@BotFather`;
+- numeric Telegram ID администратора;
+- доступ к OpenAI-compatible API;
+- Docker и Docker Compose.
 
-- Расписание, разовые события, пары, дедлайны и повторяющиеся занятия.
-- Единый диалог для учебных вопросов, расписания, изменений и поиска по истории группы.
-- Поиск по сохранённым сообщениям группы для вопросов о домашних заданиях, отчётах и объявлениях.
-- Дедлайн с датой без времени сохраняется как событие на весь день.
-- Пересечения не блокируют сохранение: событие добавляется, а бот сообщает о конфликте в ответе.
-- `/today`, `/week`, `/ask`, `/roast`, `/all`, `/help`.
-- Reply-цепочки: reply на **любое сообщение бота** является достаточным trigger для ответа в группе.
-- Временный ответ `Думаю…` редактируется в итог или в ошибку.
-- Веб-интерфейс расписания, `/healthz`, `/admin` и API.
-- SQLite, миграции и message graph переживают перезапуск контейнера.
+## 1. Установка Docker на сервер
 
-## Как бот реагирует в группе
+Подключитесь к серверу по SSH и выполните:
 
-В настроенной группе бот обрабатывает только:
-
-1. Команды, адресованные этому боту: `/ask`, `/event`, `/today` и т. д.
-2. Явное упоминание `@username_бота`.
-3. Прямой reply пользователя на сообщение бота.
-
-Обычные несвязанные сообщения группы игнорируются. Reply на сообщение другого человека или другого бота также игнорируется.
-
-Reply-цепочка является контекстом, а не вечной блокировкой режима. Короткие ответы вроде `да`, `вторую` или `на 16:30` продолжают уточнение события. Новый явный запрос вроде `добавь завтра пятой парой физхимию` начинает новую операцию, даже если отправлен reply на старую ветку.
-
-## Команды
-
-```text
-/today
-/week
-/ask что завтра по парам?
-/event завтра в 13:00 коллоквиум по органике на 90 минут
-/event перенеси #12 на завтра в 15:00
-/event отмени семинар по ВМС
-/roast @username
-/all кто идёт за кофе?
-/help
+```bash
+sudo apt update
+sudo apt install -y git curl
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
 ```
 
-Примеры обычного продолжения:
+После этого перелогиньтесь по SSH или выполните:
 
-```text
-Пользователь: /today
-Бот: Сегодня событий нет.
-Пользователь reply: а завтра?
-Бот: [ответ по расписанию]
-
-Пользователь: /event перенеси органику
-Бот: Какую пару перенести?
-Пользователь reply: вторую
-Бот: На какое время?
-Пользователь reply: на 16:30
-Бот: [изменение сохранено]
+```bash
+newgrp docker
 ```
 
-## Дедлайны и пересечения
+Проверьте:
 
-Дедлайн без времени занимает весь день:
-
-```text
-/event добавь 10 сентября дедлайн подачи заявления
+```bash
+docker --version
+docker compose version
 ```
 
-Дедлайн с временем является обычным timed event:
+## 2. Установка Eleven Bot
 
-```text
-/event добавь сегодня в 15:00 дедлайн подачи заявления
+```bash
+git clone https://github.com/yaroslavsavateykin/eleven_bot.git
+cd eleven_bot
+cp .env.example .env
+mkdir -p data
+sudo chown -R 1000:1000 data
 ```
 
-Если время пересекается с другой парой, бот всё равно сохраняет новое событие и пишет, с чем оно пересекается. Расписание может быть противоречивым, реальность иногда тоже.
+Откройте конфигурацию:
 
-## Получение ID группы
-
-Telegram не даёт надёжно узнать numeric ID группы из её названия или username. Получайте его только через временный discovery mode и `/chatid`.
-
-1. В `.env` временно установите:
-
-```env
-TELEGRAM_DISCOVERY_MODE=true
-TELEGRAM_GROUP_CHAT_ID=
-ADMIN_TELEGRAM_USER_ID=ВАШ_NUMERIC_TELEGRAM_ID
+```bash
+nano .env
 ```
 
-2. Перезапустите сервис.
-3. Отправьте `/chatid` в нужной группе **с аккаунта администратора**.
-4. Бот пришлёт numeric Chat ID вида `-100...`.
-5. Сохраните его в `.env` и обязательно выключите discovery mode:
-
-```env
-TELEGRAM_GROUP_CHAT_ID=-1001234567890
-TELEGRAM_DISCOVERY_MODE=false
-```
-
-6. Перезапустите сервис ещё раз.
-
-После настройки `/chatid` не является рабочей пользовательской командой. Это намеренно: служебный режим не должен остаться включённым навсегда.
-
-## Конфигурация
-
-Создайте `.env` рядом с `compose.yml` или локальным `docker-compose.yml`. Секреты никогда не добавляйте в Git.
+Минимально нужно заполнить:
 
 ```env
 # Telegram
 TELEGRAM_BOT_TOKEN=...
-TELEGRAM_GROUP_CHAT_ID=-1001234567890
-TELEGRAM_DISCOVERY_MODE=false
+TELEGRAM_GROUP_CHAT_ID=
+TELEGRAM_DISCOVERY_MODE=true
 ADMIN_TELEGRAM_USER_ID=123456789
 
-# Группа и база
+# Группа
 GROUP_NAME=411 группа
 GROUP_TIMEZONE=Europe/Moscow
+
+# База
 DATABASE_PATH=/data/app.db
-RAW_MESSAGE_RETENTION_HOURS=48
 
-# Веб-интерфейс. BASE_URL отправляется ботом в сообщениях.
+# Веб-интерфейс
 HTTP_ADDR=:6767
-BASE_URL=https://schedule.example.org
+BASE_URL=http://SERVER_IP:6767
+ADMIN_PASSWORD=очень-длинный-пароль
+EXTERNAL_API_TOKEN=ещё-один-длинный-случайный-токен
 
-# Администрирование и API
-ADMIN_PASSWORD=замените-на-длинный-пароль
-EXTERNAL_API_TOKEN=длинный-случайный-токен
-
-# OpenAI-совместимый AI endpoint
-AI_BASE_URL=https://ai.example.org/v1
+# AI
+AI_BASE_URL=https://your-ai-endpoint.example/v1
 AI_API_KEY=...
 AI_TEXT_MODEL=...
 AI_VISION_MODEL=...
 AI_STT_MODEL=
 
-# Необязательно: проверка новых GitHub tags
+# Обычно менять не нужно
+AI_TOOL_MODE=native
+AI_AGENT_MODEL=
+AI_STRICT_TOOLS=false
+AI_DISABLE_PARALLEL_TOOLS=false
+AI_CONTEXT_BYTES=131072
+RAW_MESSAGE_RETENTION_HOURS=48
 GITHUB_REPOSITORY=yaroslavsavateykin/eleven_bot
 ```
 
-Главные переменные:
+Если у вас есть домен и reverse proxy, укажите его в `BASE_URL`, например:
 
-| Переменная | Назначение |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Токен, выданный BotFather. |
-| `TELEGRAM_GROUP_CHAT_ID` | ID единственной разрешённой группы. |
-| `ADMIN_TELEGRAM_USER_ID` | Numeric ID администратора для private chat. |
-| `TELEGRAM_DISCOVERY_MODE` | Временно включает `/chatid`; после настройки должен быть `false`. |
-| `BASE_URL` | Внешняя ссылка, которую бот отправляет пользователям. Не `localhost` на сервере. |
-| `HTTP_ADDR` | Адрес, на котором слушает приложение. По умолчанию `:6767`. |
-| `DATABASE_PATH` | Путь SQLite. В Docker используется `/data/app.db`. |
-| `AI_BASE_URL`, `AI_API_KEY`, `AI_TEXT_MODEL` | Параметры OpenAI-compatible endpoint. |
-| `AI_STT_MODEL` | Необязательная модель распознавания голосовых сообщений. Если пусто, бот попросит отправить текстом. |
-| `AI_TOOL_MODE` | `native` (по умолчанию) — native function calling. `legacy_json` — JSON-envelope для endpoint без поддержки native tools. |
-| `AI_CONTEXT_BYTES` | Приблизительный byte budget для всего запроса, включая schemas (по умолчанию 131072). |
-| `AI_STRICT_TOOLS` | `true` — добавляет `strict: true` и раскрывает required-поля для OpenAI strict mode (по умолчанию `false`). |
-| `AI_DISABLE_PARALLEL_TOOLS` | `true` — отключает `parallel_tool_calls` для endpoint, где это поддерживается (по умолчанию `false`). |
+```env
+BASE_URL=https://schedule.example.org
+```
 
-## Запуск через Docker Compose
+Секреты из `.env` не коммитьте в Git.
 
-Для локальной разработки:
+## 3. Первый запуск
+
+Соберите и запустите контейнер:
 
 ```bash
-cp .env.example .env
-# заполните .env
 docker compose up -d --build
+```
+
+Проверьте состояние:
+
+```bash
+docker compose ps
 curl http://127.0.0.1:6767/healthz
 ```
 
-Веб-интерфейс будет на `http://localhost:6767`, если `BASE_URL` не переопределён.
-
-Локальный compose хранит базу в `./data`. Контейнер запускается от непривилегированного пользователя; при ручном создании volume у него должны быть права на запись для UID `65532`.
-
-## Запуск готового образа
-
-Образы публикуются в GitHub Container Registry. Каждый release получает неизменяемый тег (`v0.0.31` и т. д.), а также мутабельный `latest`, который используется для обычного обновления сервера:
-
-```text
-ghcr.io/yaroslavsavateykin/eleven_bot:latest
-```
-
-На сервере compose закреплён `:latest`, и watchtower (`--label-enable`) автоматически подхватывает новый digest. Для ручного обновления или отката используйте конкретный тег:
-
-```yaml
-services:
-  eleven-bot:
-    image: ghcr.io/yaroslavsavateykin/eleven_bot:latest
-    pull_policy: always
-    env_file: .env
-    volumes:
-      - eleven_bot_data:/data
-    ports:
-      - "6767:6767"
-    restart: unless-stopped
-    init: true
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-    healthcheck:
-      test: ["CMD", "/app", "-healthcheck"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    labels:
-      com.centurylinklabs.watchtower.enable: "true"
-
-volumes:
-  eleven_bot_data:
-```
-
-Если package приватный, выполните `docker login ghcr.io` на сервере с GitHub PAT, имеющим `read:packages`.
-
-`.dockerignore` исключает `.env`, `.env.*`, `data/` и `.git/` из Docker context. Это обязательное условие перед публикацией образа.
-
-## Приватный чат администратора
-
-Только пользователь с `ADMIN_TELEGRAM_USER_ID` может писать боту в личные сообщения. Обычный текст там проходит через AI-agent: он сам определяет, является ли это беседой, вопросом о расписании или изменением события. Локальных проверок по ключевым словам нет. Например:
-
-```text
-Добавь завтра первой парой квантовую химию.
-Дедлайн заявления 10 сентября.
-Перенеси семинар ВМС на 16:30.
-```
-
-Изменения применяются к общей базе сразу, но не публикуются в группу автоматически. Для публикации:
-
-```text
-/sync preview
-/sync
-```
-
-## Архитектура
-
-```text
-Telegram -> Conversation context -> Agent -> AI native tool call
-  -> Tool Registry -> Domain service -> tool result -> AI -> final reply -> Telegram
-```
-
-- `internal/conversation` хранит входящие и bot-сообщения, reply relation и bounded context.
-- `internal/telegram` занимается авторизацией, Telegram metadata, ingestion, trigger policy и доставкой ответа. Он не понимает смысл текста.
-- `internal/conversation` хранит message graph, строит bounded reply context и выполняет group FTS search.
-- `internal/agent` запускает native tool-calling loop (10 rounds + финальный turn) с `schedule_query`, `group_search` в группе и дополнительно `schedule_create`, `schedule_create_batch`, `schedule_update`, `schedule_update_batch`, `schedule_cancel` в write/admin режимах.
-- `internal/ai` является OpenAI-compatible transport для текста, vision и speech.
-- `internal/schedule` нормализует typed recurrence, компилирует её в RRULE, проверяет целостность и применяет изменения транзакционно.
-- `internal/db/migrations` содержит единственный источник миграций.
-- `prompts` содержит встраиваемые промпты.
-
-Подробнее: [`docs/architecture.md`](docs/architecture.md). Правила для AI-агентов: [`AI_AGENTS.md`](AI_AGENTS.md).
-
-### Native AI orchestration
-
-For gateways with round-robin model combos, set `AI_AGENT_MODEL` to a stable direct
-route (for example `cx/gpt-5.6-luna` on the inspected 9router installation).
-When empty, agent requests use `AI_TEXT_MODEL`. Native requests explicitly send
-`stream:false`; streaming-shaped gateway responses remain supported. Protocol
-failures log a safe reason, response byte count and content type, never the body.
-
-Endpoint `/chat/completions` должен поддерживать native function tools и `tool_choice=auto`.
-`AI_TOOL_MODE=native` по умолчанию, `legacy_json` — явный opt-in для endpoint без native tools; silent fallback запрещён.
-До 10 tool rounds + финальный turn, несколько tool_calls в одном turn выполняются последовательно (max 100/round).
-Schemas берутся из `Tool.Schema()` (расширяется в `schema.go` для shared recurrence/limits), аргументы
-проверяются strict JSON (DisallowUnknownFields, EOF, duplicate keys, RFC3339) + typed decoder.
-Tool results — компактные `role=tool` с исходным provider ID и envelope `ok/data/error`.
-
-`AI_CONTEXT_BYTES=131072` — byte budget включая schemas, не tokenizer tokens. Последние два входных
-сообщения и все tool exchanges защищены от удаления; старая история удаляется первой.
-При превышении защищённого контекста — явное сообщение о лимите, без silent truncation. Conversation graph
-имеет собственный предварительный лимит 3000 символов.
-
-Mutation replay scoped по Telegram chat/message + canonical arguments. Результат в `agent_mutations`
-атомарно с mutation; batch хранит receipts по элементам. Новый Telegram message — новый scope.
-`AI_STRICT_TOOLS`/`AI_DISABLE_PARALLEL_TOOLS` — opt-in provider capabilities вне agent loop.
-HTTP 429/5xx retry (до 3), остальные 4xx — нет. `Complete` оставлен для `/roast`; legacy adapter
-не смешивает tool data с user prompt (tool → assistant content).
-
-## Проверки перед публикацией
+Посмотреть логи:
 
 ```bash
-gofmt -w cmd internal
-docker run --rm -v "$PWD:/src" -w /src golang:1.27 go test ./...
-docker run --rm -v "$PWD:/src" -w /src golang:1.27 go vet ./...
-node internal/web/static/app.test.mjs
-docker compose build
+docker compose logs -f app
 ```
 
-Если на хосте установлен Go 1.27, Docker-команды можно заменить на обычные `go test ./...` и `go vet ./...`.
+Если `/healthz` отвечает успешно, приложение запущено.
+
+## 4. Получение Telegram Group Chat ID
+
+При первом запуске оставьте:
+
+```env
+TELEGRAM_DISCOVERY_MODE=true
+TELEGRAM_GROUP_CHAT_ID=
+```
+
+При этом `ADMIN_TELEGRAM_USER_ID` уже должен быть указан.
+
+После запуска отправьте в нужной Telegram-группе:
+
+```text
+/chatid
+```
+
+Бот вернёт ID вида:
+
+```text
+-1001234567890
+```
+
+Запишите его в `.env` и сразу выключите discovery mode:
+
+```env
+TELEGRAM_GROUP_CHAT_ID=-1001234567890
+TELEGRAM_DISCOVERY_MODE=false
+```
+
+Примените изменения:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+После этого бот будет работать только с настроенной группой.
+
+## 5. Проверка бота
+
+В Telegram можно проверить, например:
+
+```text
+/today
+/week
+/help
+/ask что завтра по парам?
+```
+
+В группе бот отвечает на команды, прямое упоминание `@username_бота` и reply на сообщение самого бота.
+
+В личных сообщениях работать с ботом может только пользователь из `ADMIN_TELEGRAM_USER_ID`.
+
+## Управление сервером
+
+### Логи
+
+```bash
+docker compose logs -f app
+```
+
+Последние 100 строк:
+
+```bash
+docker compose logs --tail=100 app
+```
+
+### Перезапуск
+
+```bash
+docker compose restart app
+```
+
+### Остановка
+
+```bash
+docker compose down
+```
+
+База при этом остаётся в `./data/`.
+
+### Запуск
+
+```bash
+docker compose up -d
+```
+
+## Обновление
+
+Из директории проекта:
+
+```bash
+git pull
+docker compose up -d --build
+docker compose ps
+```
+
+После обновления полезно проверить:
+
+```bash
+curl http://127.0.0.1:6767/healthz
+docker compose logs --tail=100 app
+```
+
+## Резервная копия базы
+
+SQLite находится здесь:
+
+```text
+./data/app.db
+```
+
+Для простой безопасной резервной копии:
+
+```bash
+docker compose stop app
+cp data/app.db "$HOME/eleven_bot-$(date +%F-%H%M).db"
+docker compose start app
+```
+
+## Доступ к веб-интерфейсу
+
+По умолчанию приложение слушает порт `6767`.
+
+Если вы хотите открывать его напрямую извне, разрешите порт в firewall:
+
+```bash
+sudo ufw allow 6767/tcp
+```
+
+Тогда интерфейс будет доступен по адресу:
+
+```text
+http://SERVER_IP:6767
+```
+
+Для постоянного публичного сервера лучше использовать домен, HTTPS и reverse proxy (Caddy/Nginx), а наружу не публиковать порт `6767` напрямую.
+
+## Разработка без Docker
+
+Нужен Go 1.27:
+
+```bash
+go test ./...
+go vet ./...
+go run ./cmd/app
+```
+
+Также доступны:
+
+```bash
+make test
+make vet
+make run
+```
+
+## Структура проекта
+
+```text
+cmd/app/          точка входа
+internal/         основная логика приложения
+prompts/          AI-промпты
+docs/             архитектура и OpenAPI
+data/             SQLite-база при локальном Docker-запуске
+Dockerfile
+docker-compose.yml
+.env.example
+```
+
+Подробности внутренней архитектуры находятся в [docs/architecture.md](docs/architecture.md), а правила для AI-агентов — в [AI_AGENTS.md](AI_AGENTS.md).
