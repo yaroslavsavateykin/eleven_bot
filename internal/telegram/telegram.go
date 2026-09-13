@@ -95,7 +95,11 @@ func Start(ctx context.Context, token string, s Service) error {
 		{Command: "ask", Description: "Спросить о расписании"},
 		{Command: "help", Description: "Справка"},
 	}
-	adminCommands := append(append([]models.BotCommand{}, commands...), models.BotCommand{Command: "sync", Description: "Опубликовать изменения в группе"})
+	adminCommands := append(append([]models.BotCommand{}, commands...),
+		models.BotCommand{Command: "sync", Description: "Опубликовать изменения в группе"},
+		models.BotCommand{Command: "calendar", Description: "Всё расписание"},
+		models.BotCommand{Command: "people", Description: "Сводка о людях"},
+	)
 	for _, id := range []int64{s.ChatID, s.AdminID} {
 		if id == 0 {
 			continue
@@ -843,6 +847,10 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 	switch command {
 	case "/sync":
 		s.sync(ctx, b, m.Chat.ID, strings.EqualFold(strings.TrimSpace(arg), "preview"))
+	case "/calendar":
+		s.calendarDump(ctx, b, m.Chat.ID)
+	case "/people":
+		s.peopleSummaries(ctx, b, m.Chat.ID)
 	case "/today":
 		s.today(ctx, b, m.Chat.ID)
 	case "/week":
@@ -860,6 +868,103 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 		s.send(ctx, b, m.Chat.ID, "Можно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании.\n/sync preview — показать накопленные изменения\n/sync — опубликовать их группе")
 	default:
 		s.send(ctx, b, m.Chat.ID, "Неизвестная команда. Напишите /help.")
+	}
+}
+
+// calendarDump lists every active event series (title, weekday, time, recurrence).
+func (s Service) calendarDump(ctx context.Context, b *bot.Bot, chatID int64) {
+	events, err := s.Schedule.Candidates(ctx)
+	if err != nil {
+		s.send(ctx, b, chatID, "Не удалось загрузить расписание.")
+		return
+	}
+	if len(events) == 0 {
+		s.send(ctx, b, chatID, "Расписание пустое.")
+		return
+	}
+	loc := s.Schedule.TZ
+	if loc == nil {
+		loc = time.UTC
+	}
+	lines := make([]string, 0, len(events))
+	for _, e := range events {
+		when := e.StartsAt.In(loc).Format("02.01")
+		if !e.AllDay {
+			when += " " + e.StartsAt.In(loc).Format("15:04")
+			if e.EndsAt != nil {
+				when += "–" + e.EndsAt.In(loc).Format("15:04")
+			}
+		}
+		line := fmt.Sprintf("#%d %s — %s %s", e.ID, e.Title, weekdayRu(e.StartsAt.In(loc).Weekday()), when)
+		if rec := recurrenceSummary(e, loc); rec != "" {
+			line += " (" + rec + ")"
+		}
+		if e.Location != nil && strings.TrimSpace(*e.Location) != "" {
+			line += ", ауд. " + *e.Location
+		}
+		lines = append(lines, line)
+	}
+	for _, part := range telegramParts("Расписание:\n" + strings.Join(lines, "\n")) {
+		s.send(ctx, b, chatID, part)
+	}
+}
+
+// peopleSummaries lists what the bot has learned about each member.
+func (s Service) peopleSummaries(ctx context.Context, b *bot.Bot, chatID int64) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT COALESCE(u.first_name,''),COALESCE(u.username,''),m.role,COALESCE(uc.summary,'') FROM group_members m JOIN users u ON u.id=m.user_id LEFT JOIN user_contexts uc ON uc.group_id=m.group_id AND uc.user_id=u.id WHERE m.group_id=? AND m.active=1 ORDER BY m.role DESC,u.first_name`, s.GroupID)
+	if err != nil {
+		s.send(ctx, b, chatID, "Не удалось загрузить сводку о людях.")
+		return
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var name, username, role, summary string
+		if err := rows.Scan(&name, &username, &role, &summary); err != nil {
+			s.send(ctx, b, chatID, "Не удалось загрузить сводку о людях.")
+			return
+		}
+		line := name
+		if username != "" {
+			line += " (@" + username + ")"
+		}
+		if role == "admin" {
+			line += " — админ"
+		}
+		if strings.TrimSpace(summary) != "" {
+			line += ": " + summary
+		}
+		lines = append(lines, line)
+	}
+	if err := rows.Err(); err != nil {
+		s.send(ctx, b, chatID, "Не удалось загрузить сводку о людях.")
+		return
+	}
+	if len(lines) == 0 {
+		s.send(ctx, b, chatID, "О людях пока ничего не накоплено.")
+		return
+	}
+	for _, part := range telegramParts("Сводка о людях:\n" + strings.Join(lines, "\n")) {
+		s.send(ctx, b, chatID, part)
+	}
+}
+
+func weekdayRu(d time.Weekday) string {
+	switch d {
+	case time.Monday:
+		return "пн"
+	case time.Tuesday:
+		return "вт"
+	case time.Wednesday:
+		return "ср"
+	case time.Thursday:
+		return "чт"
+	case time.Friday:
+		return "пт"
+	case time.Saturday:
+		return "сб"
+	default:
+		return "вс"
 	}
 }
 
