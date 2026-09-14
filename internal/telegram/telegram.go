@@ -133,6 +133,20 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		slog.Warn("telegram message rejected", "chat_id", m.Chat.ID, "user_id", m.From.ID, "chat_type", m.Chat.Type, "configured_admin_id", s.AdminID, "configured_group_chat_id", s.ChatID)
 		return
 	}
+	// Join/leave service messages are the only member roster updates exposed by
+	// Telegram to bots. Record them even when the participant never speaks to us.
+	if m.Chat.Type != models.ChatTypePrivate {
+		for _, member := range m.NewChatMembers {
+			if _, err := admin.EnsureMember(s.DB, s.GroupID, member.ID, member.Username, member.FirstName, member.LastName, s.AdminID); err != nil {
+				slog.Error("telegram joined member upsert", "error", err, "user_id", member.ID)
+			}
+		}
+		if m.LeftChatMember != nil {
+			if err := admin.MarkMemberInactive(s.DB, s.GroupID, m.LeftChatMember.ID); err != nil {
+				slog.Error("telegram departed member update", "error", err, "user_id", m.LeftChatMember.ID)
+			}
+		}
+	}
 	userID, err := admin.EnsureMember(s.DB, s.GroupID, m.From.ID, m.From.Username, m.From.FirstName, m.From.LastName, s.AdminID)
 	if err != nil {
 		slog.Error("telegram member upsert", "error", err)
@@ -443,6 +457,9 @@ func (s Service) downloadTelegramFile(ctx context.Context, b *bot.Bot, fileID st
 
 func (s Service) dailyImageContext(ctx context.Context, b *bot.Bot) {
 	run := func() {
+		if !s.claimProfileRefresh(ctx) {
+			return
+		}
 		s.enrichImages(ctx, b)
 		s.enrichMessages(ctx)
 	}
@@ -457,6 +474,21 @@ func (s Service) dailyImageContext(ctx context.Context, b *bot.Bot) {
 			run()
 		}
 	}
+}
+
+// claimProfileRefresh persists the daily limit so restarts cannot cause extra
+// model calls or profile rewrites within the same 24-hour window.
+func (s Service) claimProfileRefresh(ctx context.Context) bool {
+	now := time.Now().UTC()
+	result, err := s.DB.ExecContext(ctx, `INSERT INTO profile_refresh_state(group_id,refreshed_at) VALUES(?,?)
+		ON CONFLICT(group_id) DO UPDATE SET refreshed_at=excluded.refreshed_at
+		WHERE profile_refresh_state.refreshed_at<?`, s.GroupID, now.Format(time.RFC3339Nano), now.Add(-24*time.Hour).Format(time.RFC3339Nano))
+	if err != nil {
+		slog.Error("daily profile refresh claim", "error", err)
+		return false
+	}
+	n, err := result.RowsAffected()
+	return err == nil && n == 1
 }
 
 func (s Service) watchGitHubTags(ctx context.Context, b *bot.Bot) {
@@ -570,7 +602,7 @@ func (s Service) enrichImages(ctx context.Context, b *bot.Bot) {
 			continue
 		}
 		note := limit(strings.Join(notes, " "), 300)
-		_, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-300),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano))
+		_, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=excluded.summary,updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			slog.Error("daily image context save", "error", err, "user_id", userID)
 			continue
@@ -583,15 +615,13 @@ func (s Service) enrichImages(ctx context.Context, b *bot.Bot) {
 	}
 }
 
-// enrichMessages summarizes every text-bearing message (text and transcribed
-// voice) into a short factual note per user, capped at 300 chars. Runs once a
-// day (plus on startup) over the unprocessed messages from the last 48 hours.
+// enrichMessages rebuilds a factual profile from each member's full retained
+// history. It runs once a day (plus on startup), never for every new message.
 func (s Service) enrichMessages(ctx context.Context) {
 	if s.AI.Key == "" || s.AI.Model == "" {
 		return
 	}
-	since := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,user_id,COALESCE(text,'') FROM messages WHERE group_id=? AND sender_type='user' AND COALESCE(text,'')<>'' AND sent_at>=? AND NOT EXISTS (SELECT 1 FROM text_context_entries e WHERE e.message_id=messages.id) ORDER BY sent_at", s.GroupID, since)
+	rows, err := s.DB.QueryContext(ctx, "SELECT m.id,m.user_id,COALESCE(m.text,'') FROM messages m JOIN group_members gm ON gm.user_id=m.user_id AND gm.group_id=m.group_id WHERE m.group_id=? AND m.sender_type='user' AND COALESCE(m.text,'')<>'' AND gm.active=1 ORDER BY m.user_id,m.sent_at,m.id", s.GroupID)
 	if err != nil {
 		slog.Error("daily text context query", "error", err)
 		return
@@ -624,7 +654,7 @@ func (s Service) enrichMessages(ctx context.Context) {
 			continue
 		}
 		note = limit(strings.TrimSpace(note), 300)
-		if _, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=substr(CASE WHEN summary='' THEN excluded.summary ELSE summary || ' ' || excluded.summary END,-300),updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=excluded.summary,updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			slog.Error("daily text context save", "error", err, "user_id", userID)
 			continue
 		}

@@ -168,5 +168,16 @@ func EnsureMember(r *sql.DB, groupID, telegramID int64, username, firstName, las
 	if err != nil {
 		return 0, err
 	}
+	if _, err = tx.Exec("INSERT OR IGNORE INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?)", groupID, id, "", now); err != nil {
+		return 0, err
+	}
 	return id, tx.Commit()
+}
+
+// MarkMemberInactive keeps a departed participant out of group-wide mentions
+// without deleting their historical messages or profile.
+func MarkMemberInactive(r *sql.DB, groupID, telegramID int64) error {
+	_, err := r.Exec(`UPDATE group_members SET active=0 WHERE group_id=?
+		AND user_id=(SELECT id FROM users WHERE telegram_user_id=?)`, groupID, telegramID)
+	return err
 }
