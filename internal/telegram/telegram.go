@@ -961,6 +961,8 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 		s.today(ctx, b, m.Chat.ID)
 	case "/week":
 		s.send(ctx, b, m.Chat.ID, "Расписание на неделю: "+s.BaseURL)
+	case "/context":
+		s.contextReply(ctx, b, m.Chat.ID, m.ID, userID)
 	case "/help", "/start":
 		s.sendMarkdown(ctx, b, m.Chat.ID, "*Команды:*\n`/sync preview` — показать накопленные изменения\n`/sync` — опубликовать их группе\n\nМожно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании. `/ask` и `/event` больше не нужны.")
 	default:
