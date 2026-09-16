@@ -88,12 +88,8 @@ func Start(ctx context.Context, token string, s Service) error {
 		}
 	}
 	commands := []models.BotCommand{
-		{Command: "event", Description: "Создать, изменить или отменить событие"},
-		{Command: "today", Description: "Расписание на сегодня"},
-		{Command: "week", Description: "Расписание на неделю"},
-		{Command: "all", Description: "Позвать известных участников"},
 		{Command: "roast", Description: "Подколоть участника"},
-		{Command: "ask", Description: "Спросить о расписании"},
+		{Command: "context", Description: "Показать мой контекст"},
 		{Command: "help", Description: "Справка"},
 	}
 	adminCommands := append(append([]models.BotCommand{}, commands...),
@@ -189,6 +185,9 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		}
 		return
 	}
+	if m.Chat.Type != models.ChatTypePrivate && strings.TrimSpace(text) != "" {
+		s.refreshUserContext(ctx, userID)
+	}
 	completed := false
 	stopLease := s.renewReceipt(ctx, m.Chat.ID, m.ID, claimToken)
 	defer func() {
@@ -212,60 +211,40 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 			completed = true
 			return
 		}
-		s.askPrivate(ctx, b, m.Chat.ID, text, stored)
-		completed = true
-		return
-	}
-	if !strings.HasPrefix(text, "/") {
-		if s.mentioned(text) {
-			slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", "mention", "resolved_mode", "conversation")
-			ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
-			s.mention(ctx, b, m, stored)
-			completed = true
-			return
-		}
-		if s.directReplyToBot(ctx, m) {
-			ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
-			s.reply(ctx, b, m, stored, userID)
-		} else if m.ReplyToMessage != nil {
-			slog.Info("telegram message ignored", "message_id", m.ID, "chat_id", m.Chat.ID, "reason", "reply_target_is_not_configured_bot", "reply_to_message_id", m.ReplyToMessage.ID, "reply_from_id", telegramReplyFromID(m), "reply_from_username", telegramReplyFromUsername(m), "reply_from_is_bot", telegramReplyFromIsBot(m), "configured_bot_user_id", s.BotUserID, "configured_bot_username", s.BotUsername)
-		}
+		s.runAgentReply(ctx, b, m.Chat.ID, 0, stored, agent.ModeAdminPrivate)
 		completed = true
 		return
 	}
 	cmd, arg := s.command(text)
-	if cmd == "" {
+	if cmd == "/roast" {
+		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+		s.roastReply(ctx, b, m.Chat.ID, m.ID, arg, m.ReplyToMessage)
 		completed = true
 		return
 	}
-	slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", "command", "resolved_mode", strings.TrimPrefix(cmd, "/"))
-	ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
-	switch cmd {
-	case "/help", "/start":
-		s.sendMarkdownReply(ctx, b, m.Chat.ID, m.ID, "*Команды:*\n`/event` описание, `/today`, `/week`, `/all`, `/roast` @username, `/ask` вопрос\n\nСобытия: создать, перенести, заменить, отменить. Корректные запросы сохраняются сразу; пересечения времени сохраняются с предупреждением.\n\nРасписание: "+s.BaseURL)
-	case "/today":
-		s.todayReply(ctx, b, m.Chat.ID, m.ID)
-	case "/week":
-		s.sendReply(ctx, b, m.Chat.ID, m.ID, "Расписание на неделю: "+s.BaseURL)
-	case "/roast":
-		s.roastReply(ctx, b, m.Chat.ID, m.ID, arg, m.ReplyToMessage)
-	case "/ask":
-		s.askReply(ctx, b, m.Chat.ID, m.ID, arg, userID)
-	case "/all":
-		s.all(ctx, b, m.Chat.ID, arg)
-	case "/event":
-		if arg == "" && m.ReplyToMessage != nil {
-			arg = m.ReplyToMessage.Text
-		}
-		if arg == "" {
-			s.sendReply(ctx, b, m.Chat.ID, m.ID, "Опишите событие после /event.")
-			break
-		}
-		stored.Text = arg
-		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, stored, agent.ModeGroupWrite)
-	default:
-		s.sendReply(ctx, b, m.Chat.ID, m.ID, "Неизвестная команда. Напишите /help.")
+	if cmd == "/context" {
+		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+		s.contextReply(ctx, b, m.Chat.ID, m.ID, userID)
+		completed = true
+		return
 	}
+	if cmd == "/help" || cmd == "/start" {
+		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+		s.sendMarkdownReply(ctx, b, m.Chat.ID, m.ID, "Напишите обычным сообщением, что нужно сделать с расписанием или найти в истории группы. Можно тегнуть бота или ответить на его сообщение.\n\n`/roast` @username или reply — подколоть участника\n`/context` — показать ваш сохранённый контекст")
+		completed = true
+		return
+	}
+	trigger := "message"
+	if s.mentioned(text) {
+		trigger = "mention"
+	} else if s.directReplyToBot(ctx, m) {
+		trigger = "reply"
+	} else if cmd != "" {
+		trigger = "command"
+	}
+	slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", trigger, "resolved_mode", "group_write")
+	ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+	s.runAgentReply(ctx, b, m.Chat.ID, m.ID, stored, agent.ModeGroupWrite)
 	completed = true
 }
 
@@ -621,7 +600,7 @@ func (s Service) enrichMessages(ctx context.Context) {
 	if s.AI.Key == "" || s.AI.Model == "" {
 		return
 	}
-	rows, err := s.DB.QueryContext(ctx, "SELECT m.id,m.user_id,COALESCE(m.text,'') FROM messages m JOIN group_members gm ON gm.user_id=m.user_id AND gm.group_id=m.group_id WHERE m.group_id=? AND m.sender_type='user' AND COALESCE(m.text,'')<>'' AND gm.active=1 ORDER BY m.user_id,m.sent_at,m.id", s.GroupID)
+	rows, err := s.DB.QueryContext(ctx, "SELECT m.id,m.user_id FROM messages m JOIN group_members gm ON gm.user_id=m.user_id AND gm.group_id=m.group_id WHERE m.group_id=? AND m.sender_type='user' AND COALESCE(m.text,'')<>'' AND gm.active=1 ORDER BY m.user_id,m.sent_at,m.id", s.GroupID)
 	if err != nil {
 		slog.Error("daily text context query", "error", err)
 		return
@@ -630,32 +609,17 @@ func (s Service) enrichMessages(ctx context.Context) {
 	type msg struct {
 		id     int64
 		userID int64
-		text   string
 	}
 	byUser := map[int64][]msg{}
 	for rows.Next() {
 		var m msg
-		if err := rows.Scan(&m.id, &m.userID, &m.text); err != nil {
+		if err := rows.Scan(&m.id, &m.userID); err != nil {
 			return
 		}
 		byUser[m.userID] = append(byUser[m.userID], m)
 	}
 	for userID, msgs := range byUser {
-		var b strings.Builder
-		for _, m := range msgs {
-			b.WriteString(m.text)
-			b.WriteByte('\n')
-			if b.Len() > 4000 {
-				break
-			}
-		}
-		note, err := s.AI.Complete(ctx, prompts.MessageContextSystem, b.String())
-		if err != nil || strings.TrimSpace(note) == "" {
-			continue
-		}
-		note = limit(strings.TrimSpace(note), 300)
-		if _, err := s.DB.ExecContext(ctx, "INSERT INTO user_contexts(group_id,user_id,summary,tags_json,updated_at) VALUES(?,?,?,'[]',?) ON CONFLICT(group_id,user_id) DO UPDATE SET summary=excluded.summary,updated_at=excluded.updated_at", s.GroupID, userID, note, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			slog.Error("daily text context save", "error", err, "user_id", userID)
+		if !s.refreshUserContext(ctx, userID) {
 			continue
 		}
 		for _, m := range msgs {
@@ -664,6 +628,47 @@ func (s Service) enrichMessages(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// refreshUserContext builds a factual profile from every retained group
+// message by one participant. It runs after each new message and daily as a
+// safety net for historical messages.
+func (s Service) refreshUserContext(ctx context.Context, userID int64) bool {
+	if s.AI.Key == "" || s.AI.Model == "" {
+		return false
+	}
+	rows, err := s.DB.QueryContext(ctx, "SELECT COALESCE(text,'') FROM messages WHERE group_id=? AND user_id=? AND sender_type='user' AND COALESCE(text,'')<>'' AND text NOT LIKE '/%' ORDER BY sent_at DESC,id DESC", s.GroupID, userID)
+	if err != nil {
+		slog.Error("text context query", "error", err, "user_id", userID)
+		return false
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return false
+		}
+		b.WriteString(text)
+		b.WriteByte('\n')
+		if b.Len() > 4000 {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil || b.Len() == 0 {
+		return false
+	}
+	note, err := s.AI.Complete(ctx, prompts.MessageContextSystem, b.String())
+	if err != nil {
+		slog.Error("text context generation", "error", err, "user_id", userID)
+		return false
+	}
+	note = limit(strings.TrimSpace(note), 300)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE user_contexts SET summary=?,updated_at=? WHERE group_id=? AND user_id=?", note, time.Now().UTC().Format(time.RFC3339Nano), s.GroupID, userID); err != nil {
+		slog.Error("text context save", "error", err, "user_id", userID)
+		return false
+	}
+	return true
 }
 
 func command(text string) (string, string)             { return commandFor("", text) }
@@ -870,35 +875,6 @@ func (s Service) all(ctx context.Context, b *bot.Bot, chatID int64, text string)
 		_ = message
 	}
 }
-func (s Service) ask(ctx context.Context, b *bot.Bot, chatID int64, question string, userID int64) {
-	s.askReply(ctx, b, chatID, 0, question, userID)
-}
-
-func (s Service) askReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, question string, userID int64) {
-	send := func(text string) {
-		if replyTo != 0 {
-			s.sendReply(ctx, b, chatID, replyTo, text)
-			return
-		}
-		s.send(ctx, b, chatID, text)
-	}
-	if question == "" {
-		send("Напишите вопрос после /ask.")
-		return
-	}
-	_ = userID
-	if s.Agent.Client == nil {
-		send("AI не настроен.")
-		return
-	}
-	result, err := s.Agent.Run(ctx, agent.Conversation{RunID: fmt.Sprintf("telegram:%d:%d", chatID, replyTo), Messages: []conversation.Message{{SenderType: conversation.SenderUser, Text: question}}, Now: time.Now(), Timezone: s.Schedule.TZ.String()})
-	if err != nil {
-		slog.Error("ask agent", "error", err)
-		send("Не удалось получить ответ от AI. Попробуйте позже.")
-		return
-	}
-	send(limit(result.Reply, 1800))
-}
 func (s Service) roast(ctx context.Context, b *bot.Bot, chatID int64, arg string, reply *models.Message) {
 	s.roastReply(ctx, b, chatID, 0, arg, reply)
 }
@@ -946,6 +922,16 @@ func (s Service) roastReply(ctx context.Context, b *bot.Bot, chatID int64, reply
 	}
 	send(limit(answer, 200))
 }
+
+func (s Service) contextReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, userID int64) {
+	s.refreshUserContext(ctx, userID)
+	summary := s.senderSummary(ctx, &userID)
+	if summary == "" {
+		s.sendReply(ctx, b, chatID, replyTo, "Пока не накопилось достаточно содержательных сообщений для контекста.")
+		return
+	}
+	s.sendReply(ctx, b, chatID, replyTo, summary)
+}
 func limit(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
@@ -960,10 +946,6 @@ func (s Service) allowed(chatID, userID int64, private bool) bool {
 	return s.ChatID != 0 && chatID == s.ChatID
 }
 
-func (s Service) askPrivate(ctx context.Context, b *bot.Bot, chatID int64, question string, current conversation.Message) {
-	s.runAgentReply(ctx, b, chatID, 0, current, agent.ModeAdminPrivate)
-}
-
 func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message, userID int64, command, arg string) {
 	switch command {
 	case "/sync":
@@ -976,19 +958,10 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 		s.today(ctx, b, m.Chat.ID)
 	case "/week":
 		s.send(ctx, b, m.Chat.ID, "Расписание на неделю: "+s.BaseURL)
-	case "/ask":
-		s.askPrivate(ctx, b, m.Chat.ID, arg, current)
-	case "/event":
-		if arg == "" {
-			s.send(ctx, b, m.Chat.ID, "Опишите событие после /event.")
-			return
-		}
-		current.Text = arg
-		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeAdminPrivate)
 	case "/help", "/start":
-		s.sendMarkdown(ctx, b, m.Chat.ID, "*Команды:*\n`/sync preview` — показать накопленные изменения\n`/sync` — опубликовать их группе\n\nМожно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании.")
+		s.sendMarkdown(ctx, b, m.Chat.ID, "*Команды:*\n`/sync preview` — показать накопленные изменения\n`/sync` — опубликовать их группе\n\nМожно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании. `/ask` и `/event` больше не нужны.")
 	default:
-		s.send(ctx, b, m.Chat.ID, "Неизвестная команда. Напишите /help.")
+		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeAdminPrivate)
 	}
 }
 

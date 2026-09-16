@@ -15,7 +15,7 @@ func TestAuthorizationAndCommands(t *testing.T) {
 	if !s.allowed(-100, 4, false) || !s.allowed(123, 123, true) || s.allowed(456, 456, true) {
 		t.Fatal("authorization policy")
 	}
-	if command, arg := s.command("/event@eleven_bot завтра"); command != "/event" || arg != "завтра" {
+	if command, arg := s.command("/context@eleven_bot"); command != "/context" || arg != "" {
 		t.Fatalf("command=%q arg=%q", command, arg)
 	}
 }
