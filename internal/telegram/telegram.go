@@ -88,6 +88,9 @@ func Start(ctx context.Context, token string, s Service) error {
 		}
 	}
 	commands := []models.BotCommand{
+		{Command: "today", Description: "Расписание на сегодня"},
+		{Command: "week", Description: "Расписание на неделю"},
+		{Command: "all", Description: "Позвать известных участников"},
 		{Command: "roast", Description: "Подколоть участника"},
 		{Command: "context", Description: "Показать мой контекст"},
 		{Command: "help", Description: "Справка"},
@@ -225,6 +228,24 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 	if cmd == "/context" {
 		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
 		s.contextReply(ctx, b, m.Chat.ID, m.ID, userID)
+		completed = true
+		return
+	}
+	if cmd == "/today" {
+		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+		s.todayReply(ctx, b, m.Chat.ID, m.ID)
+		completed = true
+		return
+	}
+	if cmd == "/week" {
+		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+		s.sendReply(ctx, b, m.Chat.ID, m.ID, "Расписание на неделю: "+s.BaseURL)
+		completed = true
+		return
+	}
+	if cmd == "/all" {
+		ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
+		s.all(ctx, b, m.Chat.ID, arg)
 		completed = true
 		return
 	}
