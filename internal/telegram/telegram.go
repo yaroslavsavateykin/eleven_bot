@@ -234,13 +234,16 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		completed = true
 		return
 	}
-	trigger := "message"
+	trigger := ""
 	if s.mentioned(text) {
 		trigger = "mention"
 	} else if s.directReplyToBot(ctx, m) {
 		trigger = "reply"
-	} else if cmd != "" {
-		trigger = "command"
+	} else {
+		// Keep every group message for participant context, but do not interrupt
+		// the conversation unless the bot was explicitly addressed.
+		completed = true
+		return
 	}
 	slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", trigger, "resolved_mode", "group_write")
 	ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
