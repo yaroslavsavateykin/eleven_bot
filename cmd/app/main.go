@@ -68,6 +68,17 @@ func main() {
 		slog.Error("group lookup", "error", err)
 		os.Exit(1)
 	}
+	mtproto, err := telegramapp.NewMTProto(c.TelegramAPIID, c.TelegramAPIHash, c.Token, c.TelegramSessionPath)
+	if err != nil {
+		slog.Error("telegram MTProto", "error", err)
+		os.Exit(1)
+	}
+	if mtproto != nil {
+		if err := mtproto.Start(ctx); err != nil {
+			slog.Error("telegram MTProto", "error", err)
+			mtproto = nil
+		}
+	}
 	semester := schedule.Semester{Start: c.Semester.Start, End: c.Semester.End}
 	s := schedule.Service{DB: d, GroupID: groupID, TZ: loc, Semester: semester}
 	conversationService := conversation.Service{DB: d, MaxDepth: 16, MaxChars: 3000}
@@ -97,7 +108,7 @@ func main() {
 	r.Mount("/api", api.API{DB: d, Schedule: s, Token: c.ExternalToken, BaseURL: c.BaseURL}.Router())
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(webapp.Static())))
 	srv := &http.Server{Addr: c.HTTPAddr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
-	if err := telegramapp.Start(ctx, c.Token, telegramapp.Service{DB: d, Token: c.Token, Schedule: s, ChatID: c.GroupChatID, GroupID: groupID, AdminID: c.AdminTelegramUserID, Discovery: c.DiscoveryMode, BaseURL: c.BaseURL, GroupName: c.GroupName, GitHubRepository: c.GitHubRepository, AI: aiClient, Conversation: conversationService, Agent: botAgent}); err != nil {
+	if err := telegramapp.Start(ctx, c.Token, telegramapp.Service{DB: d, Token: c.Token, MTProto: mtproto, Schedule: s, ChatID: c.GroupChatID, GroupID: groupID, AdminID: c.AdminTelegramUserID, Discovery: c.DiscoveryMode, BaseURL: c.BaseURL, GroupName: c.GroupName, GitHubRepository: c.GitHubRepository, AI: aiClient, Conversation: conversationService, Agent: botAgent}); err != nil {
 		slog.Error("telegram", "error", err)
 		slog.Warn("telegram disabled due to startup error, http will continue")
 	}

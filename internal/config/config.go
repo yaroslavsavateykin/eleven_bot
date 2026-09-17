@@ -14,9 +14,11 @@ type Config struct {
 	AIToolMode                                                                                     string
 	AIContextBytes                                                                                 int
 	Token                                                                                          string
+	TelegramAPIID                                                                                  int
 	GroupChatID                                                                                    int64
 	AdminTelegramUserID                                                                            int64
 	DiscoveryMode                                                                                  bool
+	TelegramAPIHash, TelegramSessionPath                                                           string
 	GroupName, Timezone, DBPath, BaseURL, ExternalToken, AdminPassword, HTTPAddr, GitHubRepository string
 	Retention                                                                                      time.Duration
 	AIBaseURL, AIKey, AITextModel, AIVisionModel, AISTTModel                                       string
@@ -31,6 +33,16 @@ type Semester struct {
 
 func Load() (Config, error) {
 	c := Config{Token: os.Getenv("TELEGRAM_BOT_TOKEN"), DiscoveryMode: strings.EqualFold(os.Getenv("TELEGRAM_DISCOVERY_MODE"), "true"), GroupName: value("GROUP_NAME", "411 группа"), Timezone: value("GROUP_TIMEZONE", "Europe/Moscow"), DBPath: value("DATABASE_PATH", "data/app.db"), BaseURL: strings.TrimRight(value("BASE_URL", "http://localhost:6767"), "/"), ExternalToken: os.Getenv("EXTERNAL_API_TOKEN"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), HTTPAddr: value("HTTP_ADDR", ":6767"), GitHubRepository: value("GITHUB_REPOSITORY", "yaroslavsavateykin/eleven_bot"), Retention: 48 * time.Hour, AIBaseURL: os.Getenv("AI_BASE_URL"), AIKey: os.Getenv("AI_API_KEY"), AITextModel: os.Getenv("AI_TEXT_MODEL"), AIVisionModel: os.Getenv("AI_VISION_MODEL"), AISTTModel: os.Getenv("AI_STT_MODEL")}
+	c.TelegramAPIHash = os.Getenv("TELEGRAM_API_HASH")
+	c.TelegramSessionPath = value("TELEGRAM_SESSION_PATH", "")
+	if c.TelegramSessionPath == "" {
+		c.TelegramSessionPath = strings.TrimRight(c.DBPath, "/")
+		if i := strings.LastIndex(c.TelegramSessionPath, "/"); i >= 0 {
+			c.TelegramSessionPath = c.TelegramSessionPath[:i+1] + "telegram.session"
+		} else {
+			c.TelegramSessionPath = "data/telegram.session"
+		}
+	}
 	for key, target := range map[string]*bool{"AI_STRICT_TOOLS": &c.AIStrictTools, "AI_DISABLE_PARALLEL_TOOLS": &c.AIDisableParallelTools} {
 		if v := os.Getenv(key); v != "" {
 			parsed, perr := strconv.ParseBool(v)
@@ -63,6 +75,12 @@ func Load() (Config, error) {
 		c.GroupChatID, err = strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return c, fmt.Errorf("TELEGRAM_GROUP_CHAT_ID: %w", err)
+		}
+	}
+	if s := os.Getenv("TELEGRAM_API_ID"); s != "" {
+		c.TelegramAPIID, err = strconv.Atoi(s)
+		if err != nil || c.TelegramAPIID <= 0 {
+			return c, fmt.Errorf("invalid TELEGRAM_API_ID")
 		}
 	}
 	if s := os.Getenv("RAW_MESSAGE_RETENTION_HOURS"); s != "" {

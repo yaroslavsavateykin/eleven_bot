@@ -40,6 +40,9 @@ type Service struct {
 	AI                            ai.Service
 	Conversation                  conversation.Service
 	Agent                         agent.Agent
+	MTProto                       interface {
+		Members(context.Context, int64) ([]TelegramMember, error)
+	}
 }
 
 type thinkingContextKey struct{}
@@ -90,7 +93,7 @@ func Start(ctx context.Context, token string, s Service) error {
 	commands := []models.BotCommand{
 		{Command: "today", Description: "Расписание на сегодня"},
 		{Command: "week", Description: "Расписание на неделю"},
-		{Command: "all", Description: "Позвать известных участников"},
+		{Command: "all", Description: "Позвать всех участников"},
 		{Command: "roast", Description: "Подколоть участника"},
 		{Command: "context", Description: "Показать мой контекст"},
 		{Command: "help", Description: "Справка"},
@@ -132,8 +135,8 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		slog.Warn("telegram message rejected", "chat_id", m.Chat.ID, "user_id", m.From.ID, "chat_type", m.Chat.Type, "configured_admin_id", s.AdminID, "configured_group_chat_id", s.ChatID)
 		return
 	}
-	// Join/leave service messages are the only member roster updates exposed by
-	// Telegram to bots. Record them even when the participant never speaks to us.
+	// Keep join/leave service messages in local context storage even though /all
+	// obtains its current roster from MTProto.
 	if m.Chat.Type != models.ChatTypePrivate {
 		for _, member := range m.NewChatMembers {
 			if _, err := admin.EnsureMember(s.DB, s.GroupID, member.ID, member.Username, member.FirstName, member.LastName, s.AdminID); err != nil {
@@ -760,6 +763,28 @@ func (s Service) post(ctx context.Context, b *bot.Bot, chatID int64, replyTo int
 	return m, nil
 }
 
+func (s Service) postEntities(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, message MentionMessage) (*models.Message, error) {
+	params := &bot.SendMessageParams{ChatID: chatID, Text: message.Text, Entities: message.Entities}
+	if replyTo != 0 {
+		params.ReplyParameters = &models.ReplyParameters{MessageID: replyTo}
+	}
+	m, err := b.SendMessage(ctx, params)
+	if err != nil {
+		slog.Error("telegram send mentions", "error", err)
+		return nil, err
+	}
+	if m != nil {
+		msg := conversation.BotMessage{GroupID: s.GroupID, TelegramChatID: chatID, TelegramMessageID: m.ID, Kind: "text", Text: message.Text, SentAt: time.Unix(int64(m.Date), 0).UTC()}
+		if replyTo != 0 {
+			msg.ReplyToTelegramMessageID = &replyTo
+		}
+		if _, _, err := s.conversations().StoreBot(ctx, msg); err != nil {
+			slog.Error("save bot mention message", "error", err, "chat_id", chatID, "message_id", m.ID)
+		}
+	}
+	return m, nil
+}
+
 // escapeMD escapes MarkdownV2 special characters so dynamic text renders literally.
 func escapeMD(s string) string {
 	if s == "" {
@@ -799,12 +824,16 @@ func (s Service) withThinking(ctx context.Context, b *bot.Bot, chatID int64, rep
 // finishThinking edits the provisional reply once. If editing fails, callers
 // retain their normal send path so the user still receives the final result.
 func (s Service) finishThinking(ctx context.Context, b *bot.Bot, chatID int64, text string, parseMode models.ParseMode) bool {
+	return s.finishThinkingEntities(ctx, b, chatID, text, parseMode, nil)
+}
+
+func (s Service) finishThinkingEntities(ctx context.Context, b *bot.Bot, chatID int64, text string, parseMode models.ParseMode, entities []models.MessageEntity) bool {
 	pending, ok := ctx.Value(thinkingContextKey{}).(*thinkingResponse)
 	if !ok || pending == nil || pending.used || pending.chatID != chatID {
 		return false
 	}
 	pending.used = true
-	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text, ParseMode: parseMode})
+	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text, ParseMode: parseMode, Entities: entities})
 	if err != nil {
 		slog.Error("telegram edit thinking response", "error", err, "chat_id", chatID, "message_id", pending.messageID)
 		return false
@@ -870,33 +899,37 @@ func (s Service) todayReply(ctx context.Context, b *bot.Bot, chatID int64, reply
 	send(strings.Join(lines, "\n") + "\n" + s.BaseURL)
 }
 func (s Service) all(ctx context.Context, b *bot.Bot, chatID int64, text string) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT u.telegram_user_id,COALESCE(u.first_name,'участник') FROM users u JOIN group_members m ON m.user_id=u.id WHERE m.group_id=? AND m.active=1", s.GroupID)
-	if err != nil {
+	sendError := func(text string) {
+		if !s.finishThinking(ctx, b, chatID, text, "") {
+			s.send(ctx, b, chatID, text)
+		}
+	}
+	if s.MTProto == nil {
+		sendError("/all недоступен: не настроен Telegram MTProto API.")
 		return
 	}
-	defer rows.Close()
-	var mentions []string
-	for rows.Next() {
-		var id int64
-		var name string
-		_ = rows.Scan(&id, &name)
-		mentions = append(mentions, fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, id, htmlEscape(name)))
-	}
-	prefix := htmlEscape(limit(text, 1000))
-	if prefix != "" {
-		prefix += "\n"
-	}
-	for len(mentions) > 0 {
-		part := prefix
-		for tagged := 0; len(mentions) > 0 && tagged < 5 && len(part)+len(mentions[0])+1 < 3800; tagged++ {
-			part += mentions[0] + " "
-			mentions = mentions[1:]
-		}
-		message, sendErr := s.sendHTML(ctx, b, chatID, part)
-		if sendErr != nil {
+	members, err := s.MTProto.Members(ctx, chatID)
+	if err != nil {
+		slog.Error("Telegram participant roster", "error", err, "chat_id", chatID)
+		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+			sendError("Для /all мне нужны права администратора группы.")
 			return
 		}
-		_ = message
+		sendError("Не удалось получить участников группы для /all. Попробуйте позже.")
+		return
+	}
+	batches := buildMentionBatches(text, members, s.BotUserID)
+	if len(batches) == 0 {
+		sendError("Не нашёл участников, которых можно позвать.")
+		return
+	}
+	for i, batch := range batches {
+		if i == 0 && s.finishThinkingEntities(ctx, b, chatID, batch.Text, "", batch.Entities) {
+			continue
+		}
+		if _, err := s.postEntities(ctx, b, chatID, 0, batch); err != nil {
+			return
+		}
 	}
 }
 func (s Service) roast(ctx context.Context, b *bot.Bot, chatID int64, arg string, reply *models.Message) {
