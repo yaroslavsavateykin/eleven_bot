@@ -1,5 +1,9 @@
 package schedule
 
+import "errors"
+
+var ErrStaleVersion = errors.New("event version is stale")
+
 // SafeError admits only known domain diagnostics, never driver text or values.
 func SafeError(message string) string {
 	switch message {

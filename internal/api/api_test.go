@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"group411/internal/db"
 	"group411/internal/schedule"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,7 @@ func TestEventCategoryAPI(t *testing.T) {
 	for _, value := range []string{"quiz", "invalid"} {
 		r := httptest.NewRequest("POST", "/events", strings.NewReader(`{"kind":"lesson","category":"`+value+`","title":"Assessment","starts_at":"2026-09-09T08:00:00Z"}`))
 		r.Header.Set("Authorization", "Bearer test")
+		r.Header.Set("Idempotency-Key", "test-category-"+value)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		if value == "invalid" {
@@ -56,6 +59,71 @@ func TestEventCategoryAPI(t *testing.T) {
 	}
 }
 
+func TestHermesAPIVersionAndIdempotency(t *testing.T) {
+	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec("INSERT INTO groups VALUES(1,'test',1,'UTC','test','now','now')"); err != nil {
+		t.Fatal(err)
+	}
+	router := (API{DB: d, Schedule: schedule.Service{DB: d, GroupID: 1, TZ: time.UTC}, Token: "test"}).Router()
+	request := func(method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer test")
+		r.Header.Set("Idempotency-Key", "overlap-"+body)
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+	body := `{"kind":"lesson","title":"Physics","starts_at":"2026-09-09T08:00:00Z","ends_at":"2026-09-09T09:00:00Z","timezone":"UTC"}`
+	created := request("POST", "/events", body, map[string]string{"Idempotency-Key": "secretary-message:42:action:0", "X-Source-Ref": "email:42"})
+	if created.Code != http.StatusOK {
+		t.Fatal(created.Code, created.Body.String())
+	}
+	var result struct {
+		Event  schedule.Event `json:"event"`
+		Status string         `json:"status"`
+	}
+	if err = json.Unmarshal(created.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Version == "" {
+		t.Fatal("event version missing")
+	}
+	retry := request("POST", "/events", body, map[string]string{"Idempotency-Key": "secretary-message:42:action:0"})
+	if retry.Code != 200 {
+		t.Fatal(retry.Code)
+	}
+	var replay struct {
+		Event  schedule.Event `json:"event"`
+		Status string         `json:"status"`
+	}
+	json.Unmarshal(retry.Body.Bytes(), &replay)
+	if replay.Status != "duplicate" || replay.Event.ID != result.Event.ID {
+		t.Fatalf("retry=%+v", replay)
+	}
+	stale := request("PUT", "/events/"+strconv.FormatInt(result.Event.ID, 10), body, map[string]string{"Idempotency-Key": "update-1", "If-Match": "stale"})
+	if stale.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected stale conflict: %d", stale.Code)
+	}
+	updated := request("PUT", "/events/"+strconv.FormatInt(result.Event.ID, 10), body, map[string]string{"Idempotency-Key": "update-1", "If-Match": result.Event.Version})
+	if updated.Code != http.StatusOK {
+		t.Fatal(updated.Code, updated.Body.String())
+	}
+	wrong := httptest.NewRequest("GET", "/events", nil)
+	wrong.Header.Set("Authorization", "Bearer wrong")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, wrong)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatal(w.Code)
+	}
+}
+
 func TestOverlappingEventsReturnWarnings(t *testing.T) {
 	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -72,6 +140,7 @@ func TestOverlappingEventsReturnWarnings(t *testing.T) {
 	} {
 		r := httptest.NewRequest("POST", "/events", strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer test")
+		r.Header.Set("Idempotency-Key", "overlap-"+body)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		if w.Code != 200 {

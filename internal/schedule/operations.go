@@ -34,7 +34,13 @@ type ImportResult struct {
 	Skipped []SkippedOperation
 }
 
-func Snapshot(e Event) string { b, _ := json.Marshal(e); return string(b) }
+func Snapshot(e Event) string {
+	e.Version = ""
+	e.Warnings = nil
+	e.MergedDuplicateID = 0
+	b, _ := json.Marshal(e)
+	return string(b)
+}
 
 func Validate(e Event) error {
 	if strings.TrimSpace(e.Title) == "" || len(e.Title) > 500 || e.StartsAt.IsZero() {
@@ -475,12 +481,25 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 	if err != nil {
 		return e, err
 	}
+	mutation := mutationContext(ctx)
+	sourceType := mutation.SourceType
+	if sourceType == "" {
+		sourceType = "telegram"
+	}
 	sourceID := fmt.Sprintf("%d:%d:%d:%s", chatID, messageID, operationIndex, raw)
+	if mutation.ExternalID != "" {
+		sourceID = mutation.ExternalID
+		if operationIndex > 0 {
+			sourceID = fmt.Sprintf("%s:item:%d", sourceID, operationIndex)
+		}
+	}
 	if key := invocation(ctx); key != "" {
-		sourceID = fmt.Sprintf("agent:%s:%d", key, operationIndex)
+		if mutation.ExternalID == "" {
+			sourceID = fmt.Sprintf("agent:%s:%d", key, operationIndex)
+		}
 	}
 	var existingID int64
-	err = tx.QueryRowContext(ctx, "SELECT e.id FROM event_sources es JOIN events e ON e.id=es.event_id WHERE es.source_type='telegram' AND es.external_id=? AND e.group_id=?", sourceID, s.GroupID).Scan(&existingID)
+	err = tx.QueryRowContext(ctx, "SELECT e.id FROM event_sources es JOIN events e ON e.id=es.event_id WHERE es.source_type=? AND es.external_id=? AND e.group_id=?", sourceType, sourceID, s.GroupID).Scan(&existingID)
 	if err == nil {
 		return eventTx(ctx, tx, existingID, s.GroupID)
 	}
@@ -576,7 +595,7 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 	switch p.Operation {
 	case "create":
 		e.Status = "active"
-		res, er := tx.ExecContext(ctx, "INSERT INTO events(group_id,kind,category,title,description,location,starts_at,ends_at,timezone,all_day,rrule,status,source_type,dedupe_key,created_at,updated_at,recurrence_horizon) VALUES(?,?,?,?,?,?,?,?,?,?,?,'active','telegram',?,?,?,?)", s.GroupID, e.Kind, e.Category, e.Title, e.Description, e.Location, e.StartsAt.UTC().Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, e.AllDay, e.RRule, Canonical(e), now, now, e.RecurrenceHorizon)
+		res, er := tx.ExecContext(ctx, "INSERT INTO events(group_id,kind,category,title,description,location,starts_at,ends_at,timezone,all_day,rrule,status,source_type,dedupe_key,created_at,updated_at,recurrence_horizon) VALUES(?,?,?,?,?,?,?,?,?,?,?,'active',?,?,?, ?,?)", s.GroupID, e.Kind, e.Category, e.Title, e.Description, e.Location, e.StartsAt.UTC().Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, e.AllDay, e.RRule, sourceType, Canonical(e), now, now, e.RecurrenceHorizon)
 		if er != nil {
 			return e, er
 		}
@@ -625,14 +644,14 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO event_sources(event_id,source_type,telegram_chat_id,telegram_message_id,external_id,created_at) VALUES(?,'telegram',?,?,?,?)", e.ID, chatID, messageID, sourceID, now); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO event_sources(event_id,source_type,telegram_chat_id,telegram_message_id,external_id,raw_text,created_at) VALUES(?,?,?,?,?,?,?)", e.ID, sourceType, nullableTelegram(sourceType, chatID), nullableTelegramMessage(sourceType, messageID), sourceID, mutation.SourceRef, now); err != nil {
 		return e, err
 	}
 	change, err := tx.ExecContext(ctx, "INSERT INTO change_log(group_id,kind,entity_type,entity_id,payload_json,created_at) VALUES(?,?,'event',?,?,?)", s.GroupID, "event_"+p.Operation, fmt.Sprint(e.ID), raw, now)
 	if err != nil {
 		return e, err
 	}
-	if p.Announce {
+	if p.Announce || mutation.Announce {
 		changeID, er := change.LastInsertId()
 		if er != nil {
 			return e, er
@@ -679,5 +698,23 @@ func eventTx(ctx context.Context, tx *sql.Tx, id, groupID int64) (Event, error) 
 		e.EndsAt = &end
 	}
 	e.AllDay = allDay != 0
+	e.ExcludedDates, err = loadExclusions(ctx, tx, e.ID)
+	if err != nil {
+		return e, err
+	}
+	e.Version = Version(e)
 	return e, nil
+}
+
+func nullableTelegram(sourceType string, chatID int64) any {
+	if sourceType != "telegram" {
+		return nil
+	}
+	return chatID
+}
+func nullableTelegramMessage(sourceType string, messageID int) any {
+	if sourceType != "telegram" {
+		return nil
+	}
+	return messageID
 }

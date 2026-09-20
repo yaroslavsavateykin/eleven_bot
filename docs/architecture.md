@@ -34,6 +34,7 @@ flowchart TD
 - `internal/agent` is a small bounded loop. It can call only registered tools and never receives a database handle.
 - `internal/ai` is an OpenAI-compatible HTTP, vision, and speech transport.
 - `internal/schedule` owns validation, snapshots, transactions, recurrence checks, conflicts, source records, and changelog writes. Recurrence is a typed `RecurrenceSpec` at tool boundaries and is deterministically compiled to RRULE; events do not store academic-week parity.
+- The authenticated `/api/v1` schedule API is a service boundary for Hermes Hub. It calls the same domain service as Telegram, records `source_type=hermes` with a bounded source reference, requires idempotency keys for mutations, and never routes an HTTP mutation through Telegram metadata.
 
 ## Message Graph And Retention
 
@@ -54,6 +55,12 @@ ModeGroup registers schedule_query and group_search. ModeGroupWrite and ModeAdmi
 AI_TOOL_MODE defaults to native (explicit legacy_json opt-in, no silent fallback). AI_CONTEXT_BYTES defaults to 131072 approximate bytes including schemas — not tokenizer tokens. Old input history is removed first; the current message, its immediate reply parent, and all tool exchanges are protected. Oversized protected context produces a controlled error. HTTP 429 and 5xx are retried; other 4xx are not. AI_STRICT_TOOLS and AI_DISABLE_PARALLEL_TOOLS are opt-in provider capabilities kept out of the agent loop; server validation and sequential execution remain mandatory.
 
 Workflow: Telegram → Conversation context → Agent → native AI call → authorized registry → domain service → tool result (ok/data/error via role=tool) → AI → final human text → Telegram.
+
+## Hermes Hub integration
+
+ElevenBot remains the canonical database for the group schedule. Hermes Hub is the sole reasoning and approval layer for external communications: it uses authenticated read tools, creates an approval-gated ProposedAction, then invokes this API only after approval. `GET /events/{id}` returns a snapshot `version`/ETag. `PUT`, `DELETE`, and occurrence exclusion require `If-Match`; stale clients receive `412` plus the current event rather than overwriting it. All external writes require `Idempotency-Key`; the domain invocation receipt makes retried approved jobs safe.
+
+Hermes may project the change feed into an explicitly selected managed Radicale collection. That calendar is a view, not a second schedule database; direct CalDAV divergence is reviewed by Hermes rather than silently written back.
 
 Mutation invocation keys combine stable Telegram chat/message identity and canonical tool arguments. agent_mutations stores results atomically with schedule changes, sources and changelog. Replay reads the result before target resolution (and after a crash with a changed snapshot). Best-effort batches have per-item transactional receipts. New Telegram messages use new scopes; different arguments are different invocations. This does not make Telegram delivery atomic with SQLite.
 

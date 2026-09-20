@@ -10,6 +10,12 @@ import (
 
 // ExcludeOccurrence removes one local calendar occurrence, never the series.
 func (s Service) ExcludeOccurrence(ctx context.Context, id int64, date string, announce bool) (Event, error) {
+	return s.ExcludeOccurrenceVersioned(ctx, id, date, "", announce)
+}
+
+// ExcludeOccurrenceVersioned removes one occurrence with the same optimistic
+// concurrency and provenance guarantees as other external mutations.
+func (s Service) ExcludeOccurrenceVersioned(ctx context.Context, id int64, date, expectedVersion string, announce bool) (Event, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Event{}, err
@@ -21,6 +27,30 @@ func (s Service) ExcludeOccurrence(ctx context.Context, id int64, date string, a
 	}
 	if e.Status != "active" || e.RRule == nil {
 		return Event{}, fmt.Errorf("active recurring series required")
+	}
+	mutation := mutationContext(ctx)
+	sourceType := mutation.SourceType
+	if sourceType == "" {
+		sourceType = "telegram"
+	}
+	if mutation.ExternalID != "" {
+		var existingID int64
+		err = tx.QueryRowContext(ctx, "SELECT event_id FROM event_sources WHERE source_type=? AND external_id=?", sourceType, mutation.ExternalID).Scan(&existingID)
+		if err == nil {
+			if existingID != id {
+				return Event{}, fmt.Errorf("source belongs to another event")
+			}
+			if err = tx.Commit(); err != nil {
+				return Event{}, err
+			}
+			return s.Get(ctx, id), nil
+		}
+		if err != sql.ErrNoRows {
+			return Event{}, err
+		}
+	}
+	if expectedVersion != "" && expectedVersion != Version(e) {
+		return e, ErrStaleVersion
 	}
 	loc, err := time.LoadLocation(e.Timezone)
 	if err != nil {
@@ -73,10 +103,15 @@ func (s Service) ExcludeOccurrence(ctx context.Context, id int64, date string, a
 			}
 		}
 	}
+	if mutation.ExternalID != "" {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO event_sources(event_id,source_type,external_id,raw_text,created_at) VALUES(?,?,?,?,?)", id, sourceType, mutation.ExternalID, mutation.SourceRef, now); err != nil {
+			return Event{}, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return Event{}, err
 	}
-	return e, nil
+	return s.Get(ctx, id), nil
 }
 
 type exclusionQuery interface {

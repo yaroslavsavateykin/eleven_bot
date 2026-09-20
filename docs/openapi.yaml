@@ -4,15 +4,21 @@ servers: [{url: http://localhost:6767/api/v1}]
 components:
   securitySchemes: {bearerAuth: {type: http, scheme: bearer}}
   schemas:
-    Event: {type: object, required: [title, starts_at], properties: {id: {type: integer}, kind: {type: string}, title: {type: string}, starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}, timezone: {type: string}, rrule: {type: string}, tags: {type: array, items: {type: string}}}}
+    Event: {type: object, required: [title, starts_at], properties: {id: {type: integer}, version: {type: string, description: Stable server snapshot token for If-Match}, kind: {type: string}, title: {type: string}, description: {type: string, nullable: true}, location: {type: string, nullable: true}, starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}, timezone: {type: string}, all_day: {type: boolean}, rrule: {type: string}, excluded_dates: {type: array, items: {type: string, format: date}}, tags: {type: array, items: {type: string}}}}
     OverlapWarning: {type: object, required: [event, starts_at], properties: {event: {$ref: '#/components/schemas/Event'}, starts_at: {type: string, format: date-time}}}
 security: [{bearerAuth: []}]
 paths:
   /events:
     get: {summary: List active events, responses: {'200': {description: Events}}}
-    post: {summary: Create an event without AI; overlapping events are persisted and returned as warnings, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}}, responses: {'200': {description: Created or duplicate with warnings}}}
+    post: {summary: Create an event without AI; Idempotency-Key is required, parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}, {name: X-Source-Ref, in: header, schema: {type: string}}], requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}}, responses: {'200': {description: Created or duplicate with warnings}, '401': {description: Unauthorized}}}
   /events/{id}:
-    get: {summary: Get event, parameters: [{name: id, in: path, required: true, schema: {type: integer}}], responses: {'200': {description: Event}}}
+    get: {summary: Get event and ETag/version, parameters: [{name: id, in: path, required: true, schema: {type: integer}}], responses: {'200': {description: Event}}}
+    put: {summary: Full event update; requires If-Match and Idempotency-Key, parameters: [{name: id, in: path, required: true, schema: {type: integer}}, {name: If-Match, in: header, required: true, schema: {type: string}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}], responses: {'200': {description: Updated}, '412': {description: Stale version, current event returned}}}
+    delete: {summary: Cancel an event or series; requires If-Match and Idempotency-Key, parameters: [{name: id, in: path, required: true, schema: {type: integer}}, {name: If-Match, in: header, required: true, schema: {type: string}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}], responses: {'200': {description: Cancelled}, '412': {description: Stale version}}}
+  /events/{id}/exclude-occurrence:
+    post: {summary: Exclude one local YYYY-MM-DD occurrence from a recurring series; requires If-Match and Idempotency-Key, parameters: [{name: id, in: path, required: true, schema: {type: integer}}, {name: If-Match, in: header, required: true, schema: {type: string}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}], responses: {'200': {description: Excluded}, '412': {description: Stale version}}}
+  /events/batch:
+    post: {summary: Bounded best-effort batch; Idempotency-Key required. Each result is created, updated, cancelled, excluded, duplicate, conflict, or error, parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}], responses: {'200': {description: Per-operation results}}}
   /reminders:
     get: {summary: List reminders, responses: {'200': {description: Reminders}}}
     post: {summary: Create reminder, responses: {'200': {description: Created}}}

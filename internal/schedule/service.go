@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"github.com/teambition/rrule-go"
 	"group411/internal/category"
@@ -15,24 +16,27 @@ import (
 )
 
 type Event struct {
-	ExcludedDates     []string   `json:"excluded_dates,omitempty"`
-	ID                int64      `json:"id"`
-	GroupID           int64      `json:"group_id"`
-	Kind              string     `json:"kind"`
-	Category          string     `json:"category"`
-	Title             string     `json:"title"`
-	Description       *string    `json:"description,omitempty"`
-	Location          *string    `json:"location,omitempty"`
-	StartsAt          time.Time  `json:"starts_at"`
-	EndsAt            *time.Time `json:"ends_at,omitempty"`
-	Timezone          string     `json:"timezone"`
-	AllDay            bool       `json:"all_day"`
-	RRule             *string    `json:"rrule,omitempty"`
-	Status            string     `json:"status"`
-	Tags              []string   `json:"tags,omitempty"`
-	Warnings          []Conflict `json:"warnings,omitempty"`
-	MergedDuplicateID int64      `json:"-"`
-	RecurrenceHorizon string     `json:"-"`
+	ExcludedDates []string   `json:"excluded_dates,omitempty"`
+	ID            int64      `json:"id"`
+	GroupID       int64      `json:"group_id"`
+	Kind          string     `json:"kind"`
+	Category      string     `json:"category"`
+	Title         string     `json:"title"`
+	Description   *string    `json:"description,omitempty"`
+	Location      *string    `json:"location,omitempty"`
+	StartsAt      time.Time  `json:"starts_at"`
+	EndsAt        *time.Time `json:"ends_at,omitempty"`
+	Timezone      string     `json:"timezone"`
+	AllDay        bool       `json:"all_day"`
+	RRule         *string    `json:"rrule,omitempty"`
+	Status        string     `json:"status"`
+	Tags          []string   `json:"tags,omitempty"`
+	Warnings      []Conflict `json:"warnings,omitempty"`
+	// Version is an API concurrency token. It is calculated from the canonical
+	// server snapshot and is never persisted as a second mutable revision.
+	Version           string `json:"version,omitempty"`
+	MergedDuplicateID int64  `json:"-"`
+	RecurrenceHorizon string `json:"-"`
 }
 type Service struct {
 	DB       *sql.DB
@@ -63,6 +67,17 @@ func Canonical(e Event) string {
 	// Category is metadata, not identity; preserve existing persisted dedupe keys.
 	s := fmt.Sprintf("%d|%s|%s|%s|%s|%s", e.GroupID, e.Kind, norm(e.Title), e.StartsAt.In(time.FixedZone("", 0)).Format("2006-01-02 15:04"), recurrenceIdentity(e), norm(value(e.Location)))
 	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// Version is stable for an unchanged canonical event and changes together with
+// any field visible to a schedule client (including occurrence exclusions).
+func Version(e Event) string {
+	e.Version = ""
+	e.Warnings = nil
+	e.MergedDuplicateID = 0
+	b, _ := json.Marshal(e)
+	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
 func norm(s string) string {
@@ -221,6 +236,7 @@ func (s Service) Get(ctx context.Context, id int64) Event {
 	if e.GroupID != s.GroupID {
 		return Event{}
 	}
+	e.Version = Version(e)
 	return e
 }
 func (s Service) event(ctx context.Context, where string, arg any) (Event, error) {
@@ -252,6 +268,9 @@ func (s Service) event(ctx context.Context, where string, arg any) (Event, error
 	}
 	rows.Close()
 	e.ExcludedDates, err = loadExclusions(ctx, s.DB, e.ID)
+	if err == nil {
+		e.Version = Version(e)
+	}
 	return e, err
 }
 func (s Service) List(ctx context.Context, from, to time.Time, tags []string) ([]Event, error) {
