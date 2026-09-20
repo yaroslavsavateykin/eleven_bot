@@ -105,7 +105,11 @@ func main() {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); fmt.Fprint(w, "ok\n") })
 	r.Get("/", w.Index)
 	r.Mount("/admin", admin.Handler{DB: d, GroupID: groupID, Password: c.AdminPassword}.Router())
-	r.Mount("/api", api.API{DB: d, Schedule: s, Token: c.ExternalToken, BaseURL: c.BaseURL}.Router())
+	// Keep the established /api/v1 contract and retain /api temporarily for
+	// existing private callers during the Hermes Hub rollout.
+	apiHandler := api.API{DB: d, Schedule: s, Token: c.ExternalToken, BaseURL: c.BaseURL}.Router()
+	r.Mount("/api/v1", apiHandler)
+	r.Mount("/api", apiHandler)
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(webapp.Static())))
 	srv := &http.Server{Addr: c.HTTPAddr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
 	if err := telegramapp.Start(ctx, c.Token, telegramapp.Service{DB: d, Token: c.Token, MTProto: mtproto, Schedule: s, ChatID: c.GroupChatID, GroupID: groupID, AdminID: c.AdminTelegramUserID, Discovery: c.DiscoveryMode, BaseURL: c.BaseURL, GroupName: c.GroupName, GitHubRepository: c.GitHubRepository, AI: aiClient, Conversation: conversationService, Agent: botAgent}); err != nil {
