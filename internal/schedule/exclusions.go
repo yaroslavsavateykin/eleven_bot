@@ -102,6 +102,11 @@ func (s Service) ExcludeOccurrenceVersioned(ctx context.Context, id int64, date,
 				return Event{}, err
 			}
 		}
+		if mutation.SourceType == "hermes" {
+			if _, err = tx.ExecContext(ctx, "INSERT INTO admin_schedule_notifications(group_id,change_id,created_at) VALUES(?,?,?)", s.GroupID, changeID(change), now); err != nil {
+				return Event{}, err
+			}
+		}
 	}
 	if mutation.ExternalID != "" {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO event_sources(event_id,source_type,external_id,raw_text,created_at) VALUES(?,?,?,?,?)", id, sourceType, mutation.ExternalID, mutation.SourceRef, now); err != nil {

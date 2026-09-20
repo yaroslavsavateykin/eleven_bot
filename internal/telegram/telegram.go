@@ -118,8 +118,65 @@ func Start(ctx context.Context, token string, s Service) error {
 	go b.Start(ctx)
 	go service.dailyImageContext(ctx, b)
 	go service.watchGitHubTags(ctx, b)
+	go service.watchAdminScheduleNotifications(ctx, b)
 	slog.Info("telegram long polling started", "chat_id", service.ChatID, "bot_user_id", service.BotUserID)
 	return nil
+}
+
+// Hermes mutations are already approved in Hermes Hub. Notify the Eleven
+// administrator privately after the canonical DB transaction commits, without
+// turning that notification into a public group announcement.
+func (s Service) watchAdminScheduleNotifications(ctx context.Context, b *bot.Bot) {
+	if s.AdminID == 0 {
+		return
+	}
+	flush := func() {
+		rows, err := s.DB.QueryContext(ctx, `SELECT n.change_id,c.kind,c.payload_json FROM admin_schedule_notifications n JOIN change_log c ON c.id=n.change_id WHERE n.group_id=? ORDER BY n.change_id LIMIT 20`, s.GroupID)
+		if err != nil {
+			slog.Error("load Hermes schedule notifications", "error", err)
+			return
+		}
+		defer rows.Close()
+		var ids []any
+		var changes []announcementChange
+		for rows.Next() {
+			var change announcementChange
+			var raw string
+			if err = rows.Scan(&change.ID, &change.Kind, &raw); err != nil {
+				return
+			}
+			if err = json.Unmarshal([]byte(raw), &change.Proposal); err != nil {
+				slog.Error("decode Hermes schedule notification", "error", err)
+				return
+			}
+			ids = append(ids, change.ID)
+			changes = append(changes, change)
+		}
+		if err = rows.Err(); err != nil || len(changes) == 0 {
+			return
+		}
+		if _, err = s.sendMarkdown(ctx, b, s.AdminID, "*Hermes изменил расписание после approval:*\n\n"+s.announcementDigest(changes)); err != nil {
+			return
+		}
+		marks := make([]string, len(ids))
+		for i := range ids {
+			marks[i] = "?"
+		}
+		if _, err = s.DB.ExecContext(ctx, "DELETE FROM admin_schedule_notifications WHERE group_id=? AND change_id IN ("+strings.Join(marks, ",")+")", append([]any{s.GroupID}, ids...)...); err != nil {
+			slog.Error("ack Hermes schedule notification", "error", err)
+		}
+	}
+	flush()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {

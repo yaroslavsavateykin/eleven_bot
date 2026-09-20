@@ -21,7 +21,7 @@ type Config struct {
 	TelegramAPIHash, TelegramSessionPath                                                           string
 	GroupName, Timezone, DBPath, BaseURL, ExternalToken, AdminPassword, HTTPAddr, GitHubRepository string
 	Retention                                                                                      time.Duration
-	AIBaseURL, AIKey, AITextModel, AIVisionModel, AISTTModel                                       string
+	AIBaseURL, AIKey, AITextModel, AIVisionModel, AISTTModel, WhisperBaseURL, WhisperAPIKey        string
 	Semester                                                                                       Semester
 }
 
@@ -32,7 +32,7 @@ type Semester struct {
 }
 
 func Load() (Config, error) {
-	c := Config{Token: os.Getenv("TELEGRAM_BOT_TOKEN"), DiscoveryMode: strings.EqualFold(os.Getenv("TELEGRAM_DISCOVERY_MODE"), "true"), GroupName: value("GROUP_NAME", "411 группа"), Timezone: value("GROUP_TIMEZONE", "Europe/Moscow"), DBPath: value("DATABASE_PATH", "data/app.db"), BaseURL: strings.TrimRight(value("BASE_URL", "http://localhost:6767"), "/"), ExternalToken: os.Getenv("EXTERNAL_API_TOKEN"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), HTTPAddr: value("HTTP_ADDR", ":6767"), GitHubRepository: value("GITHUB_REPOSITORY", "yaroslavsavateykin/eleven_bot"), Retention: 48 * time.Hour, AIBaseURL: os.Getenv("AI_BASE_URL"), AIKey: os.Getenv("AI_API_KEY"), AITextModel: os.Getenv("AI_TEXT_MODEL"), AIVisionModel: os.Getenv("AI_VISION_MODEL"), AISTTModel: os.Getenv("AI_STT_MODEL")}
+	c := Config{Token: os.Getenv("TELEGRAM_BOT_TOKEN"), DiscoveryMode: strings.EqualFold(os.Getenv("TELEGRAM_DISCOVERY_MODE"), "true"), GroupName: value("GROUP_NAME", "411 группа"), Timezone: value("GROUP_TIMEZONE", "Europe/Moscow"), DBPath: value("DATABASE_PATH", "data/app.db"), BaseURL: strings.TrimRight(value("BASE_URL", "http://localhost:6767"), "/"), ExternalToken: os.Getenv("EXTERNAL_API_TOKEN"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), HTTPAddr: value("HTTP_ADDR", ":6767"), GitHubRepository: value("GITHUB_REPOSITORY", "yaroslavsavateykin/eleven_bot"), Retention: 48 * time.Hour, AIBaseURL: os.Getenv("AI_BASE_URL"), AIKey: os.Getenv("AI_API_KEY"), AITextModel: os.Getenv("AI_TEXT_MODEL"), AIVisionModel: os.Getenv("AI_VISION_MODEL"), AISTTModel: os.Getenv("AI_STT_MODEL"), WhisperBaseURL: strings.TrimRight(os.Getenv("WHISPER_BASE_URL"), "/"), WhisperAPIKey: os.Getenv("WHISPER_API_KEY")}
 	c.TelegramAPIHash = os.Getenv("TELEGRAM_API_HASH")
 	c.TelegramSessionPath = value("TELEGRAM_SESSION_PATH", "")
 	if c.TelegramSessionPath == "" {

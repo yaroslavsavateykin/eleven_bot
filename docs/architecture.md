@@ -62,6 +62,17 @@ ElevenBot remains the canonical database for the group schedule. Hermes Hub is t
 
 Hermes may project the change feed into an explicitly selected managed Radicale collection. That calendar is a view, not a second schedule database; direct CalDAV divergence is reviewed by Hermes rather than silently written back.
 
+Successful Hermes-originated mutations are recorded as canonical `source_type=hermes` changes and queued for a private Telegram notification to the configured Eleven administrator. They are not reclassified as Telegram writes and are not automatically broadcast to the whole group.
+
+## Dedicated Whisper transcription
+
+Telegram voice messages can use an independent private Whisper service through
+`WHISPER_BASE_URL` (and optional `WHISPER_API_KEY`). When configured, ElevenBot
+sends bounded multipart audio to `WHISPER_BASE_URL/inference` and consumes only
+the returned JSON `text`; text/vision agent credentials and the Telegram
+transport remain separate. Without it, the existing OpenAI-compatible
+`AI_BASE_URL/audio/transcriptions` path remains backward compatible.
+
 Mutation invocation keys combine stable Telegram chat/message identity and canonical tool arguments. agent_mutations stores results atomically with schedule changes, sources and changelog. Replay reads the result before target resolution (and after a crash with a changed snapshot). Best-effort batches have per-item transactional receipts. New Telegram messages use new scopes; different arguments are different invocations. This does not make Telegram delivery atomic with SQLite.
 
 Tool results are compact (IDs, titles, times, rrule, 5 warnings max, 20 search hits × 600 chars) — never full DB dumps. Strict JSON validation uses DisallowUnknownFields, single-value EOF, duplicate-key detection, RFC3339 and bounded recurrence/length checks.

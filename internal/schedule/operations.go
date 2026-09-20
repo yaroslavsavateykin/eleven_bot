@@ -660,9 +660,20 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 			return e, err
 		}
 	}
+	// Hermes already requires a human approval in Communication Secretary. Its
+	// successful canonical mutation is still surfaced to the configured Eleven
+	// administrator, but it is never misclassified as a Telegram-originated
+	// write and is not placed into the group broadcast queue.
+	if mutation.SourceType == "hermes" {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO admin_schedule_notifications(group_id,change_id,created_at) VALUES(?,?,?)", s.GroupID, changeID(change), now); err != nil {
+			return e, err
+		}
+	}
 	e.Warnings = warnings
 	return e, nil
 }
+
+func changeID(result sql.Result) int64 { id, _ := result.LastInsertId(); return id }
 
 func withoutConflict(warnings []Conflict, eventID int64) []Conflict {
 	if eventID == 0 {

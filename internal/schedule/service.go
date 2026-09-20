@@ -204,9 +204,16 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 				return e, false, err
 			}
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO change_log(group_id,kind,entity_type,entity_id,payload_json,created_at) VALUES(?,?,?,?,?,?)", e.GroupID, "event_created", "event", fmt.Sprint(id), "{}", now)
+		change, changeErr := tx.ExecContext(ctx, "INSERT INTO change_log(group_id,kind,entity_type,entity_id,payload_json,created_at) VALUES(?,?,?,?,?,?)", e.GroupID, "event_created", "event", fmt.Sprint(id), "{}", now)
+		err = changeErr
 		if err != nil {
 			return e, false, err
+		}
+		if source == "hermes" {
+			changeID, _ := change.LastInsertId()
+			if _, err = tx.ExecContext(ctx, "INSERT INTO admin_schedule_notifications(group_id,change_id,created_at) VALUES(?,?,?)", e.GroupID, changeID, now); err != nil {
+				return e, false, err
+			}
 		}
 	}
 	if err = tx.Commit(); err != nil {

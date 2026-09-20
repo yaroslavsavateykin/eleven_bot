@@ -16,16 +16,19 @@ import (
 )
 
 type Service struct {
-	AgentModel                                 string
-	ToolMode                                   string
-	DisableParallelTools                       bool
-	StrictTools                                bool
-	BaseURL, Key, Model, VisionModel, STTModel string
-	Client                                     *http.Client
+	AgentModel                                                                string
+	ToolMode                                                                  string
+	DisableParallelTools                                                      bool
+	StrictTools                                                               bool
+	BaseURL, Key, Model, VisionModel, STTModel, WhisperBaseURL, WhisperAPIKey string
+	Client                                                                    *http.Client
 }
 
 // Transcribe converts a Telegram voice recording to text before normal routing.
 func (s Service) Transcribe(ctx context.Context, audio []byte, filename, mimeType string) (string, error) {
+	if s.WhisperBaseURL != "" {
+		return s.transcribeWhisper(ctx, audio, filename, mimeType)
+	}
 	if s.Key == "" || s.STTModel == "" || len(audio) == 0 || len(audio) > 10<<20 {
 		return "", fmt.Errorf("voice transcription is not configured or file is too large")
 	}
@@ -60,6 +63,49 @@ func (s Service) Transcribe(ctx context.Context, audio []byte, filename, mimeTyp
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out) != nil || strings.TrimSpace(out.Text) == "" {
 		return "", fmt.Errorf("voice transcription failed")
+	}
+	return strings.TrimSpace(out.Text), nil
+}
+
+// transcribeWhisper uses an independently configured private Whisper service
+// implementing the existing Hermes-compatible multipart /inference contract.
+func (s Service) transcribeWhisper(ctx context.Context, audio []byte, filename, mimeType string) (string, error) {
+	if len(audio) == 0 || len(audio) > 10<<20 {
+		return "", fmt.Errorf("voice transcription file is empty or too large")
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", err
+	}
+	if _, err = part.Write(audio); err != nil {
+		return "", err
+	}
+	if err = writer.WriteField("response_format", "json"); err != nil {
+		return "", err
+	}
+	if err = writer.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.WhisperBaseURL+"/inference", &body)
+	if err != nil {
+		return "", err
+	}
+	if s.WhisperAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.WhisperAPIKey)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("dedicated Whisper transcription: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Text string `json:"text"`
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out) != nil || strings.TrimSpace(out.Text) == "" {
+		return "", fmt.Errorf("dedicated Whisper transcription failed")
 	}
 	return strings.TrimSpace(out.Text), nil
 }
