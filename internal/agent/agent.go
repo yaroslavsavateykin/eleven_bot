@@ -23,6 +23,7 @@ type Agent struct {
 	Tools, AdminTools []Tool
 	MaxRounds         int // Tool rounds; one additional turn is allowed for the final answer.
 	ContextBytes      int
+	RunTimeout        time.Duration // Bounds the complete provider and tool-call loop.
 	Progress          func(string)
 }
 
@@ -37,6 +38,12 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		}
 		input.RunID = fmt.Sprintf("%x", id)
 	}
+	timeout := a.RunTimeout
+	if timeout <= 0 {
+		timeout = 75 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	rounds := a.MaxRounds
 	if rounds <= 0 {
 		rounds = 10
@@ -105,7 +112,11 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		}
 		turn, err := a.Client.Chat(ctx, request)
 		if err != nil {
-			slog.Error("agent provider failure", "run_id", input.RunID, "round", round, "error", err)
+			category := "provider_failure"
+			if errors.Is(err, context.DeadlineExceeded) {
+				category = "timeout"
+			}
+			slog.Error("agent stopped", "run_id", input.RunID, "round", round, "category", category, "timeout", timeout, "error", err)
 			return Result{}, err
 		}
 		slog.Info("agent turn", "run_id", input.RunID, "round", round, "model", turn.Model, "finish_reason", turn.FinishReason)
@@ -132,6 +143,7 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 		request.Messages = append(request.Messages, ai.ChatMessage{Role: "assistant", Content: turn.Content, ToolCalls: turn.ToolCalls})
 		for _, call := range turn.ToolCalls {
 			if err := ctx.Err(); err != nil {
+				slog.Warn("agent stopped", "run_id", input.RunID, "round", round, "tool", call.Name, "category", "timeout", "timeout", timeout, "error", err)
 				return Result{}, err
 			}
 			start := time.Now()
@@ -154,6 +166,10 @@ func (a Agent) Run(ctx context.Context, input Conversation) (Result, error) {
 						a.Progress(toolProgress(call.Name))
 					}
 					result, err := tool.Execute(schedule.WithInvocation(ctx, input.RunID+"/"+key), call.Arguments)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						slog.Warn("agent stopped", "run_id", input.RunID, "round", round, "tool", call.Name, "category", "timeout", "timeout", timeout, "error", ctxErr)
+						return Result{}, ctxErr
+					}
 					if err != nil {
 						code, message = "tool_execution", "Не удалось выполнить инструмент. Проверьте аргументы и доступность события."
 						var invalid *ArgumentError

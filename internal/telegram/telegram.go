@@ -786,7 +786,8 @@ func (s Service) sendMarkdownReply(ctx context.Context, b *bot.Bot, chatID int64
 
 // deliver sends a message with the given parse mode, editing the pending
 // provisional placeholder when present. When fallback is set and the formatted
-// send fails, it retries as plain text so the user always receives the result.
+// send or provisional-message edit fails, it retries as plain text so the user
+// always receives the result exactly once.
 func (s Service) deliver(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, text string, parseMode models.ParseMode, fallback bool) (*models.Message, error) {
 	if s.finishThinking(ctx, b, chatID, text, parseMode) {
 		return nil, nil
@@ -891,6 +892,12 @@ func (s Service) finishThinkingEntities(ctx context.Context, b *bot.Bot, chatID 
 	}
 	pending.used = true
 	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text, ParseMode: parseMode, Entities: entities})
+	if err != nil && parseMode != "" {
+		// Telegram MarkdownV2 rejects any unescaped reserved character. Retrying
+		// without a parse mode preserves the complete answer instead of leaving
+		// the provisional thinking text visible or sending a duplicate.
+		_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text})
+	}
 	if err != nil {
 		slog.Error("telegram edit thinking response", "error", err, "chat_id", chatID, "message_id", pending.messageID)
 		return false

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,14 @@ type fakeTool struct {
 	calls int
 }
 
+type blockingTool struct{ fakeTool }
+
+func (t *blockingTool) Execute(ctx context.Context, raw json.RawMessage) (ToolResult, error) {
+	t.calls++
+	<-ctx.Done()
+	return ToolResult{}, ctx.Err()
+}
+
 func (t *fakeTool) Name() string          { return t.name }
 func (*fakeTool) Description() string     { return "test" }
 func (*fakeTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -70,6 +79,19 @@ func TestAgentExecutesOnlyRegisteredTool(t *testing.T) {
 	result, err := (Agent{Client: client, Tools: []Tool{tool}, Progress: func(text string) { progress = append(progress, text) }}).Run(context.Background(), testInput())
 	if err != nil || result.Reply == "" || tool.calls != 1 || len(progress) != 1 || progress[0] != "Ищу нужное занятие в расписании…" {
 		t.Fatalf("result=%#v calls=%d progress=%v err=%v", result, tool.calls, progress, err)
+	}
+}
+
+func TestAgentRunTimeoutCancelsScheduleUpdate(t *testing.T) {
+	tool := &blockingTool{fakeTool: fakeTool{name: "schedule_update"}}
+	client := &fakeClient{answers: []string{`{"reply":"","tool_calls":[{"name":"schedule_update","arguments":{"target_id":1}}]}`}}
+	started := time.Now()
+	_, err := (Agent{Client: client, AdminTools: []Tool{tool}, RunTimeout: 20 * time.Millisecond}).Run(context.Background(), Conversation{Messages: testInput().Messages, Now: time.Now(), Timezone: "UTC", Mode: ModeGroupWrite})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	if tool.calls != 1 || time.Since(started) > time.Second {
+		t.Fatalf("calls=%d duration=%s", tool.calls, time.Since(started))
 	}
 }
 func TestWriteToolsAreNotAvailableInGroupMode(t *testing.T) {

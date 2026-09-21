@@ -99,6 +99,7 @@ func main() {
 		},
 		MaxRounds:    10,
 		ContextBytes: c.AIContextBytes,
+		RunTimeout:   75 * time.Second,
 	}
 	w := webapp.New(s, c.GroupName, loc)
 	r := chi.NewRouter()
