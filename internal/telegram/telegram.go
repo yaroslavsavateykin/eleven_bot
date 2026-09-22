@@ -75,7 +75,9 @@ func Start(ctx context.Context, token string, s Service) error {
 	// instance that receives GetMe metadata below; binding s.handle here would
 	// capture an earlier copy with BotUserID still zero.
 	service := &s
-	b, err := bot.New(token, bot.WithDefaultHandler(service.handle))
+	// Profile enrichment and AI calls may take seconds. Multiple workers keep one
+	// slow update from freezing the whole long-poll queue.
+	b, err := bot.New(token, bot.WithDefaultHandler(service.handle), bot.WithWorkers(8))
 	if err != nil {
 		return fmt.Errorf("create telegram bot: %w", err)
 	}
@@ -249,7 +251,10 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		return
 	}
 	if m.Chat.Type != models.ChatTypePrivate && strings.TrimSpace(text) != "" {
-		s.refreshUserContext(ctx, userID)
+		// Enrichment is auxiliary context, never a prerequisite for accepting or
+		// answering an update. Running it asynchronously prevents a slow model
+		// request from serializing Telegram long-poll processing.
+		go s.refreshUserContext(context.WithoutCancel(ctx), userID)
 	}
 	completed := false
 	stopLease := s.renewReceipt(ctx, m.Chat.ID, m.ID, claimToken)

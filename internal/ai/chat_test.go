@@ -39,6 +39,28 @@ func TestChatRetriesAndText(t *testing.T) {
 		})
 	}
 }
+
+func TestTranscribeUsesDedicatedSTTConfiguration(t *testing.T) {
+	var gotModel, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/audio/transcriptions" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		gotModel = r.FormValue("model")
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"text":"распознано"}`)
+	}))
+	defer server.Close()
+
+	text, err := (Service{BaseURL: "http://chat.invalid/v1", Key: "chat-key", STTBaseURL: server.URL, STTKey: "stt-key", STTModel: "gpt-4o-mini-transcribe"}).Transcribe(context.Background(), []byte("audio"), "voice.ogg", "audio/ogg")
+	if err != nil || text != "распознано" || gotModel != "gpt-4o-mini-transcribe" || gotAuth != "Bearer stt-key" {
+		t.Fatalf("text=%q model=%q auth=%q err=%v", text, gotModel, gotAuth, err)
+	}
+}
+
 func TestDecodeNativeSSE(t *testing.T) {
 	raw := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"schedule_query","arguments":"{\"query\":"}}]}}]}
 

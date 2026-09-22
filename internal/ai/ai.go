@@ -16,12 +16,12 @@ import (
 )
 
 type Service struct {
-	AgentModel                                                                string
-	ToolMode                                                                  string
-	DisableParallelTools                                                      bool
-	StrictTools                                                               bool
-	BaseURL, Key, Model, VisionModel, STTModel, WhisperBaseURL, WhisperAPIKey string
-	Client                                                                    *http.Client
+	AgentModel                                                                                    string
+	ToolMode                                                                                      string
+	DisableParallelTools                                                                          bool
+	StrictTools                                                                                   bool
+	BaseURL, Key, Model, VisionModel, STTBaseURL, STTKey, STTModel, WhisperBaseURL, WhisperAPIKey string
+	Client                                                                                        *http.Client
 }
 
 // Transcribe converts a Telegram voice recording to text before normal routing.
@@ -29,7 +29,7 @@ func (s Service) Transcribe(ctx context.Context, audio []byte, filename, mimeTyp
 	if s.WhisperBaseURL != "" {
 		return s.transcribeWhisper(ctx, audio, filename, mimeType)
 	}
-	if s.Key == "" || s.STTModel == "" || len(audio) == 0 || len(audio) > 10<<20 {
+	if s.sttKey() == "" || s.STTModel == "" || len(audio) == 0 || len(audio) > 10<<20 {
 		return "", fmt.Errorf("voice transcription is not configured or file is too large")
 	}
 	var body bytes.Buffer
@@ -47,11 +47,11 @@ func (s Service) Transcribe(ctx context.Context, audio []byte, filename, mimeTyp
 	if err = w.Close(); err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL()+"/audio/transcriptions", &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sttBaseURL()+"/audio/transcriptions", &body)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.Key)
+	req.Header.Set("Authorization", "Bearer "+s.sttKey())
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	resp, err := s.httpClient().Do(req)
 	if err != nil {
@@ -65,6 +65,23 @@ func (s Service) Transcribe(ctx context.Context, audio []byte, filename, mimeTyp
 		return "", fmt.Errorf("voice transcription failed")
 	}
 	return strings.TrimSpace(out.Text), nil
+}
+
+// sttBaseURL and sttKey permit a transcription provider to be configured
+// independently from chat completion while preserving the existing AI gateway
+// as a safe default.
+func (s Service) sttBaseURL() string {
+	if s.STTBaseURL != "" {
+		return strings.TrimRight(s.STTBaseURL, "/")
+	}
+	return s.baseURL()
+}
+
+func (s Service) sttKey() string {
+	if s.STTKey != "" {
+		return s.STTKey
+	}
+	return s.Key
 }
 
 // transcribeWhisper uses an independently configured private Whisper service
