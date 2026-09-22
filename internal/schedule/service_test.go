@@ -19,7 +19,11 @@ func TestOneOffAndDuplicate(t *testing.T) {
 	if _, e = d.Exec("INSERT INTO groups(name,telegram_chat_id,timezone,dashboard_slug,created_at,updated_at) VALUES('411',-1,'Europe/Moscow','411',?,?)", now, now); e != nil {
 		t.Fatal(e)
 	}
-	s := Service{DB: d, GroupID: 1, TZ: time.FixedZone("MSK", 3*3600)}
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := Service{DB: d, GroupID: 1, TZ: loc}
 	start := time.Date(2026, 9, 9, 9, 40, 0, 0, time.UTC)
 	e1, dup, e := s.Create(ctx, Event{Kind: "lesson", Title: "Квантовая химия", StartsAt: start}, "test", "x", "text")
 	if e != nil || dup || e1.ID == 0 {

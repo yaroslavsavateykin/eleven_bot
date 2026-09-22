@@ -36,7 +36,7 @@ docker compose version
 
 ```bash
 sudo mkdir -p /opt/eleven-bot/data
-sudo chown -R "$USER":"$USER" /opt/eleven-bot
+sudo chown -R 65532:65532 /opt/eleven-bot/data
 cd /opt/eleven-bot
 ```
 
@@ -57,7 +57,7 @@ services:
   app:
     image: ${ELEVEN_BOT_IMAGE:-ghcr.io/yaroslavsavateykin/eleven_bot:latest}
     pull_policy: always
-    user: "1000:1000"
+    user: "65532:65532"
 
     env_file:
       - .env

@@ -54,7 +54,7 @@ func Load() (Config, error) {
 	}
 	c.AIToolMode = value("AI_TOOL_MODE", "native")
 	if c.AIToolMode != "native" && c.AIToolMode != "legacy_json" {
-		c.AIToolMode = "native"
+		return c, fmt.Errorf("AI_TOOL_MODE must be native or legacy_json")
 	}
 	c.AIContextBytes = 131072
 	var err error

@@ -149,9 +149,8 @@ func (a API) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database error", 500)
 		return
 	}
-	for i := range v {
-		v[i].Version = schedule.Version(v[i])
-	}
+	// List expands recurring series into occurrences. Their optimistic-locking
+	// token still belongs to the underlying series and is set by Schedule.List.
 	write(w, map[string]any{"events": v})
 }
 func (a API) get(w http.ResponseWriter, r *http.Request) {
@@ -337,6 +336,20 @@ func (a API) batch(w http.ResponseWriter, r *http.Request) {
 		itemCtx := schedule.WithInvocation(ctx, fmt.Sprintf("hermes:%s:item:%d", key, i))
 		itemCtx = schedule.WithMutationContext(itemCtx, schedule.MutationContext{SourceType: "hermes", ExternalID: fmt.Sprintf("%s:item:%d", key, i), SourceRef: strings.TrimSpace(r.Header.Get("X-Source-Ref"))})
 		out := map[string]any{"index": i, "operation": item.Operation}
+		// A retry can arrive after the first request committed but before its
+		// response reached Hermes. Replay the durable per-item receipt before
+		// resolving the current version, which has legitimately changed.
+		if replay, found, replayErr := a.Schedule.InvocationResult(itemCtx); replayErr != nil {
+			out["status"] = "error"
+			out["error"] = "database error"
+			results = append(results, out)
+			continue
+		} else if found && len(replay) == 1 {
+			out["status"] = "duplicate"
+			out["event"] = replay[0]
+			results = append(results, out)
+			continue
+		}
 		switch item.Operation {
 		case "create":
 			if item.Event == nil {

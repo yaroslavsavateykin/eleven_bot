@@ -124,6 +124,30 @@ func TestHermesAPIVersionAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsUnsupportedRecurrence(t *testing.T) {
+	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err = d.Exec("INSERT INTO groups VALUES(1,'test',1,'UTC','test','now','now')"); err != nil {
+		t.Fatal(err)
+	}
+	router := (API{DB: d, Schedule: schedule.Service{DB: d, GroupID: 1, TZ: time.UTC}, Token: "test"}).Router()
+	r := httptest.NewRequest("POST", "/events", strings.NewReader(`{"kind":"lesson","title":"Physics","starts_at":"2026-09-09T08:00:00Z","ends_at":"2026-09-09T09:00:00Z","timezone":"UTC","rrule":"FREQ=HOURLY;COUNT=2"}`))
+	r.Header.Set("Authorization", "Bearer test")
+	r.Header.Set("Idempotency-Key", "hourly")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported recurrence accepted: %d %s", w.Code, w.Body.String())
+	}
+	var count int
+	if err := d.QueryRow("SELECT COUNT(*) FROM events").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("invalid event persisted: count=%d err=%v", count, err)
+	}
+}
+
 func TestOverlappingEventsReturnWarnings(t *testing.T) {
 	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

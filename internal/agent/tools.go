@@ -536,6 +536,9 @@ func (t GroupSearchTool) Execute(ctx context.Context, raw json.RawMessage) (Tool
 
 func decode(raw json.RawMessage, target any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	// Tool schemas prohibit unknown fields. Enforce the same contract on the
+	// server even when the provider does not support strict tool schemas.
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil || dec.Decode(new(any)) != io.EOF {
 		return &ArgumentError{"Аргументы должны быть одним валидным JSON-объектом."}
 	}

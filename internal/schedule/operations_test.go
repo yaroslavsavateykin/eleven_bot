@@ -293,6 +293,9 @@ func TestRenameMergesExactDuplicateIntoTarget(t *testing.T) {
 	if status := s.Get(ctx, first.ID).Status; status != "cancelled" {
 		t.Fatalf("duplicate status=%q", status)
 	}
+	if persisted := s.Get(ctx, second.ID); persisted.Title != first.Title || !persisted.StartsAt.Equal(first.StartsAt) {
+		t.Fatalf("target event was not updated: %#v", persisted)
+	}
 }
 
 func TestPrivateProposalQueuesAnnouncement(t *testing.T) {

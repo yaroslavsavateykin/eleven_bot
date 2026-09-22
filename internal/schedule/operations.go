@@ -614,7 +614,10 @@ func (s Service) applyTx(ctx context.Context, tx *sql.Tx, p Proposal, chatID int
 			e.MergedDuplicateID = duplicateID
 			warnings = withoutConflict(warnings, duplicateID)
 		}
-		if err != sql.ErrNoRows {
+		// sql.ErrNoRows means there is no duplicate. A nil error means that the
+		// duplicate was found and retired above; continue with the requested
+		// update instead of returning a successful, but unapplied, proposal.
+		if err != nil && err != sql.ErrNoRows {
 			return e, err
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE events SET kind=?,category=?,title=?,description=?,location=?,starts_at=?,ends_at=?,timezone=?,all_day=?,rrule=?,dedupe_key=?,recurrence_horizon=?,updated_at=? WHERE id=? AND group_id=?", e.Kind, e.Category, e.Title, e.Description, e.Location, e.StartsAt.UTC().Format(time.RFC3339Nano), timePtr(e.EndsAt), e.Timezone, e.AllDay, e.RRule, key, e.RecurrenceHorizon, now, e.ID, s.GroupID)

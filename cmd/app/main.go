@@ -103,7 +103,16 @@ func main() {
 	}
 	w := webapp.New(s, c.GroupName, loc)
 	r := chi.NewRouter()
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); fmt.Fprint(w, "ok\n") })
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		check, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := d.PingContext(check); err != nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok\n")
+	})
 	r.Get("/", w.Index)
 	r.Mount("/admin", admin.Handler{DB: d, GroupID: groupID, Password: c.AdminPassword}.Router())
 	// Keep the established /api/v1 contract and retain /api temporarily for

@@ -23,3 +23,12 @@ func TestDecodeRejectsTrailingJSON(t *testing.T) {
 		t.Fatal("trailing JSON accepted")
 	}
 }
+
+func TestDecodeRejectsUnknownFields(t *testing.T) {
+	var input struct {
+		TargetID int64 `json:"target_id"`
+	}
+	if err := decode(json.RawMessage(`{"target_id":1,"unexpected":true}`), &input); err == nil {
+		t.Fatal("unknown field accepted")
+	}
+}

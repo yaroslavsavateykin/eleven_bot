@@ -58,6 +58,8 @@ var groupSyncMu sync.Mutex
 const (
 	telegramDeliveryTimeout = 12 * time.Second
 	thinkingDeliveryTimeout = 2 * time.Second
+	backgroundTaskTimeout   = 2 * time.Minute
+	telegramFileMaxBytes    = 10 << 20
 )
 
 func (s Service) conversations() conversation.Service {
@@ -92,9 +94,11 @@ func Start(ctx context.Context, token string, s Service) error {
 	}
 	service.BotUsername = strings.TrimPrefix(strings.ToLower(me.Username), "@")
 	service.BotUserID = me.ID
+	// Command menus are convenience metadata. Do not make message processing
+	// unavailable because Telegram temporarily rejects a menu update.
 	for _, scope := range []models.BotCommandScope{&models.BotCommandScopeDefault{}, &models.BotCommandScopeAllPrivateChats{}, &models.BotCommandScopeAllGroupChats{}} {
 		if _, err = b.DeleteMyCommands(ctx, &bot.DeleteMyCommandsParams{Scope: scope}); err != nil {
-			return fmt.Errorf("clear telegram commands: %w", err)
+			slog.Warn("clear telegram commands", "error", err)
 		}
 	}
 	commands := []models.BotCommand{
@@ -119,10 +123,11 @@ func Start(ctx context.Context, token string, s Service) error {
 			selected = adminCommands
 		}
 		if _, err = b.SetMyCommands(ctx, &bot.SetMyCommandsParams{Scope: &models.BotCommandScopeChat{ChatID: id}, Commands: selected}); err != nil {
-			return fmt.Errorf("set telegram commands: %w", err)
+			slog.Warn("set telegram commands", "error", err, "chat_id", id)
 		}
 	}
 	go b.Start(ctx)
+	go service.recoverPendingReceipts(ctx, b)
 	go service.dailyImageContext(ctx, b)
 	go service.watchGitHubTags(ctx, b)
 	go service.watchAdminScheduleNotifications(ctx, b)
@@ -225,6 +230,7 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		voice, err := s.downloadTelegramFile(ctx, b, m.Voice.FileID)
 		if err != nil {
 			slog.Error("download voice", "error", err, "chat_id", m.Chat.ID, "message_id", m.ID)
+			_, _ = s.sendReply(ctx, b, m.Chat.ID, m.ID, "Не удалось скачать голосовое сообщение. Отправьте текстом.")
 			return
 		}
 		text, err = s.AI.Transcribe(ctx, voice, "voice.ogg", m.Voice.MimeType)
@@ -259,7 +265,13 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 		// Enrichment is auxiliary context, never a prerequisite for accepting or
 		// answering an update. Running it asynchronously prevents a slow model
 		// request from serializing Telegram long-poll processing.
-		go s.refreshUserContext(context.WithoutCancel(ctx), userID)
+		// This is auxiliary work. It must not inherit cancellation from the
+		// update worker, nor run forever and exhaust the SQLite connection.
+		go func() {
+			backgroundCtx, cancel := context.WithTimeout(context.Background(), backgroundTaskTimeout)
+			defer cancel()
+			s.refreshUserContext(backgroundCtx, userID)
+		}()
 	}
 	completed := false
 	stopLease := s.renewReceipt(ctx, m.Chat.ID, m.ID, claimToken)
@@ -284,8 +296,7 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 			completed = true
 			return
 		}
-		s.runAgentReply(ctx, b, m.Chat.ID, 0, stored, agent.ModeAdminPrivate)
-		completed = true
+		completed = s.runAgentReply(ctx, b, m.Chat.ID, 0, stored, agent.ModeAdminPrivate) == nil
 		return
 	}
 	cmd, arg := s.command(text)
@@ -338,8 +349,62 @@ func (s *Service) handle(ctx context.Context, b *bot.Bot, u *models.Update) {
 	}
 	slog.Info("telegram routing", "message_id", m.ID, "chat_id", m.Chat.ID, "trigger", trigger, "resolved_mode", "group_write")
 	ctx = s.withThinking(ctx, b, m.Chat.ID, m.ID)
-	s.runAgentReply(ctx, b, m.Chat.ID, m.ID, stored, agent.ModeGroupWrite)
-	completed = true
+	completed = s.runAgentReply(ctx, b, m.Chat.ID, m.ID, stored, agent.ModeGroupWrite) == nil
+}
+
+// recoverPendingReceipts retries an already-ingested update after a process or
+// Telegram delivery failure. Polling advances its offset before a handler
+// completes, so pending receipts otherwise remain stranded forever. Agent
+// mutations are invocation-idempotent, making this replay safe.
+func (s Service) recoverPendingReceipts(ctx context.Context, b *bot.Bot) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.chat_id,r.message_id,m.id
+		FROM telegram_receipts r JOIN messages m ON m.telegram_chat_id=r.chat_id AND m.telegram_message_id=r.message_id
+		WHERE r.status='pending' ORDER BY r.updated_at LIMIT 100`)
+	if err != nil {
+		slog.Error("load pending telegram receipts", "error", err)
+		return
+	}
+	defer rows.Close()
+	type pending struct {
+		chatID    int64
+		messageID int
+		localID   int64
+	}
+	var entries []pending
+	for rows.Next() {
+		var item pending
+		if err := rows.Scan(&item.chatID, &item.messageID, &item.localID); err != nil {
+			slog.Error("scan pending telegram receipt", "error", err)
+			return
+		}
+		entries = append(entries, item)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("iterate pending telegram receipts", "error", err)
+		return
+	}
+	for _, item := range entries {
+		token, claimed, err := s.claimReceipt(ctx, item.chatID, item.messageID)
+		if err != nil || !claimed {
+			continue
+		}
+		message, err := s.conversations().ByID(ctx, item.localID)
+		if err != nil {
+			_ = s.releaseReceipt(context.Background(), item.chatID, item.messageID, token, err)
+			continue
+		}
+		mode := agent.ModeGroup
+		if item.chatID == s.AdminID {
+			mode = agent.ModeAdminPrivate
+		}
+		if err := s.runAgentReply(ctx, b, item.chatID, item.messageID, message, mode); err != nil {
+			_ = s.releaseReceipt(context.Background(), item.chatID, item.messageID, token, err)
+			continue
+		}
+		if err := s.completeReceipt(context.Background(), item.chatID, item.messageID, token); err != nil {
+			slog.Error("complete recovered telegram receipt", "error", err, "chat_id", item.chatID, "message_id", item.messageID)
+		}
+	}
 }
 
 func (s Service) renewReceipt(ctx context.Context, chatID int64, messageID int, token string) func() {
@@ -448,7 +513,7 @@ func (s Service) mentioned(text string) bool {
 }
 
 func (s Service) mention(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message) {
-	s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeGroup)
+	_ = s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeGroup)
 }
 
 func replyID(m *models.Message) *int {
@@ -517,7 +582,8 @@ func (s Service) downloadTelegramFile(ctx context.Context, b *bot.Bot, fileID st
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: telegramDeliveryTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +591,14 @@ func (s Service) downloadTelegramFile(ctx context.Context, b *bot.Bot, fileID st
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Telegram file returned HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 10<<20+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, telegramFileMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > telegramFileMaxBytes {
+		return nil, fmt.Errorf("Telegram file is too large")
+	}
+	return data, nil
 }
 
 func (s Service) dailyImageContext(ctx context.Context, b *bot.Bot) {
@@ -612,7 +685,8 @@ func latestGitHubTag(ctx context.Context, repository string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: telegramDeliveryTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -749,7 +823,13 @@ func (s Service) refreshUserContext(ctx context.Context, userID int64) bool {
 			break
 		}
 	}
-	if err := rows.Err(); err != nil || b.Len() == 0 {
+	// SQLite is deliberately configured with one connection. Release the
+	// cursor before the slow model call and before writing the generated
+	// profile, otherwise a partial iteration can deadlock this goroutine.
+	if err := rows.Err(); err != nil {
+		return false
+	}
+	if err := rows.Close(); err != nil || b.Len() == 0 {
 		return false
 	}
 	note, err := s.AI.Complete(ctx, prompts.MessageContextSystem, b.String())
@@ -1112,7 +1192,7 @@ func (s Service) privateCommand(ctx context.Context, b *bot.Bot, m *models.Messa
 	case "/help", "/start":
 		s.sendMarkdown(ctx, b, m.Chat.ID, "*Команды:*\n`/sync preview` — показать накопленные изменения\n`/sync` — опубликовать их группе\n\nМожно писать обычным текстом: добавить, перенести или отменить событие, а также спросить о расписании. `/ask` и `/event` больше не нужны.")
 	default:
-		s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeAdminPrivate)
+		_ = s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeAdminPrivate)
 	}
 }
 
@@ -1317,12 +1397,12 @@ func telegramParts(text string) []string {
 
 func (s Service) reply(ctx context.Context, b *bot.Bot, m *models.Message, current conversation.Message, userID int64) {
 	_ = userID
-	s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeGroup)
+	_ = s.runAgentReply(ctx, b, m.Chat.ID, m.ID, current, agent.ModeGroup)
 }
 
-func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, current conversation.Message, mode agent.Mode) {
+func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, replyTo int, current conversation.Message, mode agent.Mode) error {
 	if s.Agent.Client == nil {
-		return
+		return errors.New("agent is not configured")
 	}
 	messages := []conversation.Message{{SenderType: conversation.SenderUser, Text: current.Text}}
 	if mode == agent.ModeAdminPrivate {
@@ -1375,17 +1455,19 @@ func (s Service) runAgentReply(ctx context.Context, b *bot.Bot, chatID int64, re
 		slog.Error("agent", "error", err)
 		text := agentErrorReply(err)
 		if replyTo != 0 {
-			s.sendReply(ctx, b, chatID, replyTo, text)
+			_, sendErr := s.sendReply(ctx, b, chatID, replyTo, text)
+			return sendErr
 		} else {
-			s.send(ctx, b, chatID, text)
+			_, sendErr := s.send(ctx, b, chatID, text)
+			return sendErr
 		}
-		return
 	}
 	if replyTo != 0 {
-		s.sendReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
-		return
+		_, err := s.sendReply(ctx, b, chatID, replyTo, limit(result.Reply, 1800))
+		return err
 	}
-	s.send(ctx, b, chatID, limit(result.Reply, 1800))
+	_, err = s.send(ctx, b, chatID, limit(result.Reply, 1800))
+	return err
 }
 
 // senderSummary returns the compact per-user context for the current sender.

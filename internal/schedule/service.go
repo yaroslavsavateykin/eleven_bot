@@ -128,7 +128,7 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 		}
 	}
 	if e.Timezone == "" {
-		e.Timezone = s.TZ.String()
+		e.Timezone = s.defaultTimezone()
 	}
 	if e, err = s.normalizeRecurrence(e); err != nil {
 		return e, false, err
@@ -139,6 +139,13 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 			return e, false, err
 		}
 	}
+	// HTTP creation historically accepted an omitted end time. Preserve that
+	// contract while ensuring every persisted event passes the same validation
+	// as Agent-originated proposals.
+	if e.EndsAt == nil {
+		end := e.StartsAt.Add(95 * time.Minute)
+		e.EndsAt = &end
+	}
 	e.StartsAt = e.StartsAt.UTC()
 	if e.EndsAt != nil {
 		v := e.EndsAt.UTC()
@@ -146,6 +153,9 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 			return e, false, fmt.Errorf("ends_at must be after starts_at")
 		}
 		e.EndsAt = &v
+	}
+	if err = Validate(e); err != nil {
+		return e, false, err
 	}
 	key := Canonical(e)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -204,7 +214,11 @@ func (s Service) Create(ctx context.Context, e Event, source, external, raw stri
 				return e, false, err
 			}
 		}
-		change, changeErr := tx.ExecContext(ctx, "INSERT INTO change_log(group_id,kind,entity_type,entity_id,payload_json,created_at) VALUES(?,?,?,?,?,?)", e.GroupID, "event_created", "event", fmt.Sprint(id), "{}", now)
+		proposal, marshalErr := json.Marshal(Proposal{Operation: "create", Event: e})
+		if marshalErr != nil {
+			return e, false, marshalErr
+		}
+		change, changeErr := tx.ExecContext(ctx, "INSERT INTO change_log(group_id,kind,entity_type,entity_id,payload_json,created_at) VALUES(?,?,?,?,?,?)", e.GroupID, "event_create", "event", fmt.Sprint(id), string(proposal), now)
 		err = changeErr
 		if err != nil {
 			return e, false, err
