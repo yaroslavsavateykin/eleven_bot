@@ -55,6 +55,11 @@ type thinkingResponse struct {
 
 var groupSyncMu sync.Mutex
 
+const (
+	telegramDeliveryTimeout = 12 * time.Second
+	thinkingDeliveryTimeout = 2 * time.Second
+)
+
 func (s Service) conversations() conversation.Service {
 	if s.Conversation.DB != nil {
 		return s.Conversation
@@ -809,6 +814,8 @@ func (s Service) post(ctx context.Context, b *bot.Bot, chatID int64, replyTo int
 	if replyTo != 0 {
 		params.ReplyParameters = &models.ReplyParameters{MessageID: replyTo}
 	}
+	ctx, cancel := telegramDeliveryContext(ctx)
+	defer cancel()
 	m, err := b.SendMessage(ctx, params)
 	if err != nil {
 		slog.Error("telegram send", "error", err)
@@ -831,6 +838,8 @@ func (s Service) postEntities(ctx context.Context, b *bot.Bot, chatID int64, rep
 	if replyTo != 0 {
 		params.ReplyParameters = &models.ReplyParameters{MessageID: replyTo}
 	}
+	ctx, cancel := telegramDeliveryContext(ctx)
+	defer cancel()
 	m, err := b.SendMessage(ctx, params)
 	if err != nil {
 		slog.Error("telegram send mentions", "error", err)
@@ -877,7 +886,11 @@ func escapeMD(s string) string {
 }
 
 func (s Service) withThinking(ctx context.Context, b *bot.Bot, chatID int64, replyTo int) context.Context {
-	m, err := s.sendReply(ctx, b, chatID, replyTo, conversation.ProvisionalText)
+	// The provisional response is optional. Do not let a slow Bot API send delay
+	// the actual agent request; the final answer still falls back to a new reply.
+	thinkingCtx, cancel := context.WithTimeout(ctx, thinkingDeliveryTimeout)
+	defer cancel()
+	m, err := s.sendReply(thinkingCtx, b, chatID, replyTo, conversation.ProvisionalText)
 	if err != nil || m == nil {
 		return ctx
 	}
@@ -896,12 +909,14 @@ func (s Service) finishThinkingEntities(ctx context.Context, b *bot.Bot, chatID 
 		return false
 	}
 	pending.used = true
-	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text, ParseMode: parseMode, Entities: entities})
+	deliveryCtx, cancel := telegramDeliveryContext(ctx)
+	defer cancel()
+	_, err := b.EditMessageText(deliveryCtx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text, ParseMode: parseMode, Entities: entities})
 	if err != nil && parseMode != "" {
 		// Telegram MarkdownV2 rejects any unescaped reserved character. Retrying
 		// without a parse mode preserves the complete answer instead of leaving
 		// the provisional thinking text visible or sending a duplicate.
-		_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text})
+		_, err = b.EditMessageText(deliveryCtx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text})
 	}
 	if err != nil {
 		slog.Error("telegram edit thinking response", "error", err, "chat_id", chatID, "message_id", pending.messageID)
@@ -919,13 +934,21 @@ func (s Service) updateThinking(ctx context.Context, b *bot.Bot, chatID int64, t
 	if !ok || pending == nil || pending.used || pending.chatID != chatID {
 		return
 	}
-	if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text}); err != nil {
+	deliveryCtx, cancel := telegramDeliveryContext(ctx)
+	defer cancel()
+	if _, err := b.EditMessageText(deliveryCtx, &bot.EditMessageTextParams{ChatID: chatID, MessageID: pending.messageID, Text: text}); err != nil {
 		slog.Debug("telegram edit agent progress", "error", err, "chat_id", chatID, "message_id", pending.messageID)
 		return
 	}
 	if err := s.conversations().UpdateBotText(ctx, chatID, pending.messageID, text); err != nil {
 		slog.Error("save agent progress", "error", err, "chat_id", chatID, "message_id", pending.messageID)
 	}
+}
+
+// telegramDeliveryContext bounds individual Telegram sends and edits. A stalled
+// Bot API request must not prevent the agent from starting or freeze a worker.
+func telegramDeliveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, telegramDeliveryTimeout)
 }
 func (s Service) today(ctx context.Context, b *bot.Bot, chatID int64) {
 	s.todayReply(ctx, b, chatID, 0)
